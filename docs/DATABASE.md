@@ -169,10 +169,10 @@ The separate `was_completed`, `outcome_status`, and authoritative timestamp pres
 - **Purpose:** Append-only record of audited historical task changes.
 - **Columns:** `id`, `task_instance_id`, `actor_id`, `reason`, `recorded_at`, `old_state jsonb`, `new_state jsonb`, `evidence_kind null`, `evidence_source_id uuid null`, `evidence_timestamp timestamptz null`, `request_id`.
 - **Keys:** PK; FKs to task/profile.
-- **Constraints:** unique `request_id`; nonblank reason; old/new states differ; an on-time correction requires trusted evidence fields with `evidence_timestamp <= task.deadline_at`, enforced in RPC/trigger because it is cross-row.
+- **Constraints:** unique `request_id`; nonblank reason; old/new states differ; an on-time correction requires trusted evidence fields with `evidence_timestamp <= task.deadline_at`; a correction that improves an admin participant's completion/accountability/ranking requires `actor_id` to differ from the task participant. Evidence and actor/participant rules require secured RPC/trigger enforcement because they are cross-row.
 - **Indexes:** `(task_instance_id,recorded_at)`, `(actor_id,recorded_at desc)`.
 - **Mutability:** Append-only. Evidence pointer must resolve to a pre-existing trusted server record; client-supplied metadata never qualifies.
-- **Authority/RLS:** Participant may read corrections to own tasks; admins read challenge corrections; only admin RPC inserts.
+- **Authority/RLS:** Participant may read corrections to own tasks; admins read challenge corrections; only the secured admin RPC inserts after classifying whether the transition is beneficial and enforcing a different active admin when required.
 
 ## 7. Excuses
 
@@ -215,10 +215,10 @@ This join table intentionally uses a composite key rather than a UUID because th
 - **Purpose:** Append-only source of truth for challenge debt.
 - **Columns:** `id`, `challenge_id`, `challenge_member_id`, `entry_type`, `amount numeric(18,2)`, `currency_code`, `source_type`, `source_id`, `related_entry_id null`, `actor_id null`, `reason`, `created_at`, `request_id null`.
 - **Keys:** PK; FKs to challenge/member/profile and self-FK for compensation.
-- **Constraints:** amount nonzero; `PENALTY > 0`; `PAYMENT_CONFIRMED < 0`; `WAIVER < 0`; adjustment may have either sign; currency equals challenge currency; unique `(challenge_id,entry_type,source_type,source_id)`; unique request ID when supplied; waiver/adjustment links to a compatible entry and cannot over-credit it.
+- **Constraints:** amount nonzero; `PENALTY > 0`; `PAYMENT_CONFIRMED < 0`; `WAIVER < 0`; adjustment may have either sign; currency equals challenge currency; unique `(challenge_id,entry_type,source_type,source_id)`; unique request ID when supplied; waiver/adjustment links to a compatible entry and cannot over-credit it. A `WAIVER` or negative `ADMIN_ADJUSTMENT` requires a nonnull active-admin actor different from the beneficiary; `PAYMENT_CONFIRMED` inherits the payment request's independent-review rule.
 - **Indexes:** participant ledger `(challenge_member_id,created_at desc)`; challenge finance `(challenge_id,created_at desc)`; source lookup from uniqueness; `(related_entry_id)`.
 - **Mutability:** Strictly append-only; no client or admin update/delete. Corrections are new linked entries.
-- **Authority/RLS:** Participant reads own ledger; admins read challenge ledger. Only domain functions and trusted workers insert.
+- **Authority/RLS:** Participant reads own ledger; admins read challenge ledger. Only secured domain functions and trusted workers insert; they resolve beneficiary through `challenge_member_id` and reject prohibited self-benefiting writes server-side.
 
 Signed amounts were chosen because challenge debt is directly `SUM(amount)`. A view should expose outstanding debt, total penalties (`SUM(PENALTY)`), and total paid (`ABS(SUM(PAYMENT_CONFIRMED))`) separately. Negative final debt should be prevented by payment/waiver functions unless an explicit adjustment policy allows credit.
 
@@ -235,10 +235,10 @@ Signed amounts were chosen because challenge debt is directly `SUM(amount)`. A v
     where status = 'PENDING';
   ```
 
-  Pending rows require null review fields; approved/rejected rows require reviewer/time. Approval amount must not exceed debt at review time, enforced transactionally.
+  Pending rows require null review fields; approved/rejected rows require reviewer/time. `reviewed_by` must differ from the requesting member's user ID and identify an active challenge admin. Approval amount must not exceed debt at review time. These cross-table conditions are enforced transactionally by secured review functions.
 - **Indexes:** admin pending index above also serves pending queue; participant history `(challenge_member_id,submitted_at desc)`; `(challenge_id,status,submitted_at)` if queue plans show need beyond the partial index.
-- **Mutability:** Controlled one-way terminal transition. Approval creates exactly one linked ledger entry; submission alone never changes debt.
-- **Authority/RLS:** Participant reads/submits own through RPC; admins read challenge requests; only review RPC mutates status.
+- **Mutability:** Controlled one-way terminal transition. Approval creates exactly one linked ledger entry; submission alone never changes debt. A sole admin's own request remains pending until another active admin reviews it.
+- **Authority/RLS:** Participant reads/submits own through RPC; admins read challenge requests; only secured review RPC mutates status after enforcing reviewer/participant independence. UI restrictions are not authoritative.
 
 ## 9. Activity, Notifications, and Delivery
 
@@ -318,19 +318,19 @@ Important database-enforced constraints are:
 8. Non-overlapping habit-rule effective ranges; unique habit/effective start; positive target; valid schedule/reminder/penalty fields.
 9. One task per member/habit/period identity; deadline after open; frozen values valid; task outcome/completion fact/timestamp consistency.
 10. Unique progress `request_id`; positive amount; event/type compatibility; at most one counted weekly occurrence per task/local day.
-11. Unique correction request; nonblank reason; old/new differ; on-time corrections require validated trusted evidence by deadline.
-12. Excuse range/reason/status validity; `OTHER` text required; reviewer differs from participant; terminal review fields required.
+11. Unique correction request; nonblank reason; old/new differ; on-time corrections require validated trusted evidence by deadline; beneficial corrections require actor different from an admin participant target.
+12. Excuse range/reason/status validity; `OTHER` text required; active reviewer differs from participant; terminal review fields required.
 13. Unique requested habit per excuse; approved weekly reduction within original target.
 14. Unique excuse effect per request/task; same challenge/member/habit scope; nonnegative units with cumulative reduction capped at original target.
-15. Ledger amount/type sign rules, challenge currency equality, unique type/source, unique request, compatible/bounded compensation.
-16. Payment amount positive; currency equality; one pending payment per challenge/member via partial unique index; valid terminal review fields.
+15. Ledger amount/type sign rules, challenge currency equality, unique type/source/request, compatible bounded compensation, and different active-admin actor for beneficiary-reducing waiver/adjustment.
+16. Payment amount positive; currency equality; one pending payment per challenge/member via partial unique index; valid terminal fields and active reviewer different from participant.
 17. Unique activity logical source and unique notification recipient/category/source.
 18. Unique notification preference per user/challenge/category; valid mode.
 19. Unique active device token/installation.
 20. Unique notification/device/channel outbox job; valid attempt/status timestamps.
 21. Unique audit action/request and required target/decision detail.
 
-Cross-row/cross-table rules that a `CHECK` cannot express—currency equality, reviewer independence through membership, trusted evidence validation, debt-at-approval, cumulative excuse reductions, and compensation limits—belong in locked transactions/functions, with triggers only as defense in depth.
+Cross-row/cross-table rules that a `CHECK` cannot express—currency equality, active reviewer/actor independence from participant or beneficiary, beneficial-correction classification, trusted evidence validation, debt-at-approval, cumulative excuse reductions, and compensation limits—belong in locked security-definer functions with tightly controlled execute permissions, with triggers only as defense in depth.
 
 ## 12. Query-Focused Indexes
 
@@ -357,8 +357,8 @@ Avoid indexing mutable low-selectivity flags alone and avoid duplicate indexes a
 | Deadline worker vs completion | Same task row lock; server time recheck; only one valid terminal transition |
 | Deadline worker retry | `SKIP LOCKED` batches; terminal-state predicate; unique task outcome/source |
 | Penalty retry | Unique ledger `(challenge,entry_type,source_type,source_id)` for task penalty |
-| Payment approval retry | Payment row lock; pending compare-and-set; unique ledger payment source/request |
-| Two payment reviewers | Payment row lock; first terminal transition wins; second receives conflict |
+| Payment approval retry | Payment row lock; reviewer/participant independence; pending compare-and-set; unique ledger payment source/request |
+| Two payment reviewers | Active-admin and self-review checks under payment row lock; first terminal transition wins; second receives conflict |
 | Excuse review retry | Excuse row lock; pending compare-and-set; unique effects/corrections/waivers |
 | Two excuse reviewers | Excuse row lock; reviewer independence check; first terminal decision wins |
 | Weekly duplicate occurrence | Server-derived local date plus partial unique `(task,occurrence_local_date)` |
@@ -371,7 +371,8 @@ All multi-row transitions commit state, ledger, audit, activity, notification, a
 - Participants generally read their own sensitive task/progress/finance/excuse/payment records and permitted shared challenge habits, ranking, roster, and activity.
 - Participants cannot directly update task outcomes/timestamps/aggregates, ledger, payment reviews, excuse reviews/effects, admin grants, historical rules, pauses, or audit rows.
 - Challenge admins receive challenge-scoped management/read authority, always rechecked inside sensitive RPCs.
-- Admin participation does not grant authority; active `challenge_admins` does. Excuse self-review is prohibited even for active admins.
+- Admin participation does not grant authority; active `challenge_admins` does. A participating admin cannot review their own excuse/payment request, reduce their own debt, or beneficially correct their own task.
+- Secured functions resolve task participant, request participant, or ledger beneficiary after locking and require a different active challenge admin for prohibited self-actions. RLS/UI visibility alone is insufficient.
 - Realtime follows the same RLS scope; do not publish ledger, device token, or audit internals broadly.
 - Internal workers/Edge Functions use narrowly scoped trusted credentials. Service-role secrets never ship in Flutter.
 - Free-form reasons and notification payloads should be minimized and excluded from general logs.
@@ -407,6 +408,7 @@ Final RLS SQL belongs in migrations and a future `SECURITY.md`, with automated r
 
 - PostgreSQL exclusion constraints may require `btree_gist`; migration planning must confirm supported extensions.
 - Cross-table invariants need carefully permissioned functions and possibly defense-in-depth triggers; RLS alone cannot enforce them.
+- Beneficial-correction classification must use a tested server-side transition policy; a client-provided “beneficial” flag is never trusted.
 - Frozen local-date/timezone calculations require DST boundary test fixtures.
 - JSON audit snapshots need size limits and sensitive-field redaction.
 - Append-only tables require retention/partitioning review only after real volume is measured.

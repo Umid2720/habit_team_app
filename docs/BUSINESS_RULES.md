@@ -87,7 +87,7 @@ This document defines testable product rules for challenge membership, obligatio
 - **BR-061:** At submission, the server requires `amount > 0` and `amount <= current outstanding debt` for that challenge.
 - **BR-062:** MVP permits at most one `PENDING` payment request per participant per challenge.
 - **BR-063:** Submitting a request creates `PENDING`, records an authoritative timestamp, and notifies eligible admins; it does not create a ledger transaction or reduce debt.
-- **BR-064:** Only an explicitly authorized admin may approve or reject a request. A participating admin cannot derive this authority from participation.
+- **BR-064:** Only an explicitly authorized active admin may approve or reject a request. A participating admin cannot derive this authority from participation and cannot review their own payment request.
 - **BR-065:** Approval revalidates current challenge debt and the request state inside the same transaction that creates `PAYMENT_CONFIRMED`, records reviewer and `reviewed_at`, and marks the request `APPROVED`.
 - **BR-066:** Repeating a successful approval must not create another ledger entry.
 - **BR-067:** If the requested amount exceeds current debt at approval time, approval fails without changing the request or ledger. The admin must resolve it, for example by rejecting it so the participant can submit a valid amount.
@@ -128,10 +128,10 @@ Example activity: “Kamron completed Gym.”
 
 ## 11. Admin Corrections and Audit
 
-- **BR-092:** Historical correction requires explicit administrative permission, a target record, reason, actor, authoritative `recorded_at`, old state, and new state. Any claimed historical completion time must satisfy BR-143–BR-145.
+- **BR-092:** Historical correction requires explicit administrative permission, a target record, reason, actor, authoritative `recorded_at`, old state, and new state. Any claimed historical completion time must satisfy BR-143–BR-145, and any self-benefiting correction must satisfy BR-155–BR-157.
 - **BR-093:** A correction preserves the previous state and appends the new decision; it does not erase the original fact.
 - **BR-094:** Habit-rule changes, task corrections, penalty waivers/adjustments, payment decisions, and important membership changes produce immutable audit events.
-- **BR-095:** An admin correcting their own participant history receives no reduced audit requirement.
+- **BR-095:** An admin must not perform a historical correction on their own task when it would improve their completion, accountability, or ranking outcome. A different active challenge admin must perform and audit that correction.
 - **BR-096:** UI visibility, client role claims, or challenge membership alone never authorize a correction.
 
 Example: Sardor excuses Aziz's missed Fajr after reviewing a valid reason. The obligation records an audited transition to `EXCUSED`; its original penalty remains, and a linked waiver offsets it.
@@ -209,11 +209,24 @@ Example: Kamron requests September 12–15 coverage for Fajr and Gym due to a bu
 - **BR-145:** A client clock, manually entered historical timestamp, user statement alone, editable local metadata, or screenshot of a device clock is not authoritative timing evidence.
 - **BR-146:** Without qualifying pre-deadline evidence, an admin may acknowledge reported completion only as `COMPLETED_LATE`, with correction reason, actor, authoritative `recorded_at`, old state, and new state.
 - **BR-147:** A `COMPLETED_LATE` correction must not fabricate or backdate `completed_at`. It receives no artificial on-time or early normalized timestamp and cannot improve the completion-timing tie-breaker as though submitted on time.
-- **BR-148:** An admin may separately waive an associated penalty when justified. The linked waiver affects debt only and does not convert `COMPLETED_LATE` to `COMPLETED_ON_TIME` or alter ranking-time evidence.
+- **BR-148:** An authorized admin may separately waive an associated penalty when justified, but never their own penalty/debt. The linked waiver affects debt only and does not convert `COMPLETED_LATE` to `COMPLETED_ON_TIME` or alter ranking-time evidence.
 - **BR-149:** Completion recognition, timing classification, penalty accountability, and ranking evidence are separate audited decisions and must not be inferred from one another.
 
 Example: a task deadline was 23:00 and no server completion exists. The next morning, Aziz says he completed it at 21:00 but forgot to submit. Sardor may record `COMPLETED_LATE`, the report reason, and an optional linked waiver, but must not create `completed_at = 21:00` without pre-existing trusted server evidence.
 
-## 19. Open Questions
+## 19. Privileged Self-Review Separation
+
+- **BR-150:** An admin/sardor who is also a participant must not use privileged authority to review or beneficially alter their own participant-specific accountability or financial records.
+- **BR-151:** This restriction does not prevent an admin from completing current tasks normally, submitting their own excuse/payment requests, or managing challenge-wide habits, rules, and settings under ordinary audited admin authority.
+- **BR-152:** Excuse approval/rejection requires a different active challenge admin; BR-137–BR-142 continue to apply.
+- **BR-153:** Payment approval/rejection requires `reviewed_by` to identify a different active challenge admin from the payment participant. Submission by a participating admin remains allowed and never reduces debt.
+- **BR-154:** A `WAIVER` or negative `ADMIN_ADJUSTMENT` that reduces a participant's penalty/debt must be authorized by an active admin other than that beneficiary.
+- **BR-155:** A historical task correction that improves completion, accountability, or ranking for a participating admin requires a different active challenge admin. Improvement includes any more favorable recorded outcome or ranking evidence; penalty relief remains separately governed by BR-154.
+- **BR-156:** If no different active admin exists, an admin's own excuse/payment request remains `PENDING`, and a self-benefiting waiver/correction remains unresolved. Another active full challenge admin must be added before the privileged action can occur.
+- **BR-157:** Secured server-side functions must enforce reviewer/actor independence after resolving the target participant or financial beneficiary. Client-side hiding, disabled controls, or client role claims are insufficient.
+- **BR-158:** Every such review, waiver, adjustment, or correction remains auditable with actor, beneficiary/participant, challenge, target, old/new state where applicable, reason, and authoritative time.
+- **BR-159:** MVP adds no participant voting, moderator role, granular permission matrix, or special bypass for a sole admin. A future trusted-reviewer/delegated-review workflow remains V2 only.
+
+## 20. Open Questions
 
 None currently.

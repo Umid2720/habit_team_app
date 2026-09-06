@@ -48,7 +48,9 @@ Flutter must not decide completion validity or `completed_at`, close periods, cr
 
 Supabase Auth supplies immutable user identity. `profiles` holds application-facing identity; `challenge_members` controls participation; `challenge_admins` independently grants the full MVP admin role. An admin can also have a membership row, but neither row implies the other (BR-006–BR-010).
 
-RLS protects reads and blocks direct writes to authoritative fields. Participant-safe RPCs verify the authenticated user owns the target membership/task. Admin RPCs verify an active challenge admin row. Excuse review additionally requires reviewer user ID to differ from the excuse participant (BR-138–BR-140). Service-role credentials exist only in trusted server/Edge Function environments, never Flutter.
+RLS protects reads and blocks direct writes to authoritative fields. Participant-safe RPCs verify the authenticated user owns the target membership/task. Admin RPCs verify an active challenge admin row. Privileged participant-specific operations also resolve the target participant/financial beneficiary and require a different active admin for excuse/payment review, beneficial penalty/debt reduction, and beneficial historical correction (BR-150–BR-159). These checks run server-side after locking; UI hiding is only a usability aid. Service-role credentials exist only in trusted server/Edge Function environments, never Flutter.
+
+A participating admin still uses participant RPCs to complete current tasks or submit requests and may perform audited challenge-wide administration. If they are the only active admin, their own excuse/payment request remains pending and a beneficial waiver/correction cannot execute until another active admin is added.
 
 ## 6. Server-Side Mutation Boundaries
 
@@ -61,10 +63,10 @@ Each public RPC accepts a caller-generated UUID idempotency key where retry is p
 | `submit_excuse_request(challenge_id, range, reason, habits, request_id)` | Participant | Verify active membership, valid range/reason, nonempty owned challenge habits; create request and requested-habit rows; enqueue admin notice | One request per idempotency key; request creation is auditable |
 | `review_excuse_request(request_id, decision, approved_scope, request_key)` | Different challenge admin | Lock request; verify `PENDING`, admin role, reviewer != participant, approved scope is a subset; create task excuse effects; apply pre-deadline coverage or late corrections and linked waivers | Terminal state compare-and-set; one effect per request/task; audit requested vs approved scope |
 | `submit_payment_request(challenge_id, amount, request_id)` | Participant | Verify membership, currency, positive amount, amount <= locked/derived challenge debt, and no pending request; create `PENDING` request and admin notification | Partial unique pending index plus idempotency key |
-| `approve_payment_request(payment_request_id, request_id)` | Challenge admin | Lock request and participant/challenge finance scope; verify pending and current debt >= amount; append `PAYMENT_CONFIRMED`; mark approved; audit; notify participant | Unique ledger source and terminal compare-and-set prevent double approval |
-| `reject_payment_request(payment_request_id, reason, request_id)` | Challenge admin | Lock pending request; mark rejected; record reviewer/time/reason; notify; do not touch ledger | Terminal compare-and-set and idempotency key |
-| `admin_correct_task(task_id, outcome, evidence_id, reason, request_id)` | Challenge admin | Lock task; verify evidence for on-time classification; otherwise allow only late acknowledgement; append correction; update current projection; emit audit/outbox | Correction event is append-only; unique request; never fabricates `completed_at` |
-| `waive_penalty(ledger_entry_id, amount, reason, request_id)` | Challenge admin | Verify source penalty/challenge/currency and allowable remaining amount; append linked negative waiver; audit | Unique request/source prevents duplicate compensation; never alters timing status |
+| `approve_payment_request(payment_request_id, request_id)` | Different active admin when requester is an admin participant | Lock request and finance scope; verify pending, reviewer != participant, and current debt >= amount; append `PAYMENT_CONFIRMED`; mark approved; audit; notify | Unique ledger source and terminal compare-and-set prevent double approval |
+| `reject_payment_request(payment_request_id, reason, request_id)` | Different active admin when requester is an admin participant | Lock pending request; verify reviewer != participant; mark rejected; record reviewer/time/reason; notify; do not touch ledger | Terminal compare-and-set and idempotency key |
+| `admin_correct_task(task_id, outcome, evidence_id, reason, request_id)` | Challenge admin; different active admin for a self-benefiting target | Lock task; verify evidence/timing and whether transition improves target participant's outcome; prohibit beneficial self-correction; append correction; update projection; emit audit/outbox | Correction is append-only; unique request; actor/participant recorded; never fabricates `completed_at` |
+| `waive_penalty(ledger_entry_id, amount, reason, request_id)` | Active admin other than the financial beneficiary | Lock source penalty/beneficiary finance scope; verify challenge/currency/remaining amount and actor != beneficiary; append linked negative waiver; audit | Unique request/source prevents duplicate compensation; never alters timing status |
 | `change_membership_status(membership_id, status, effective_at, reason, request_id)` | Challenge admin | Lock membership; validate transition; close future eligibility; neutralize no-longer-actionable pending tasks; audit and notify | Unique request; task effects use unique correction/source references |
 | `create_or_version_habit_rule(habit_id, rule, effective_at, request_id)` | Challenge admin | Validate schedule/target/window/penalty/reminders and non-overlap; insert version, never overwrite historical version | Unique habit/effective instant and request; audit old/current/new relationship |
 | `change_challenge_timezone(challenge_id, timezone, effective_at, request_id)` | Challenge admin | Require future/unopened-period boundary; close prior timezone version and insert next; do not change materialized tasks | Non-overlapping effective range; audit |
@@ -111,20 +113,20 @@ sequenceDiagram
     actor P as Participant
     participant RPC as PostgreSQL RPC
     participant DB as PostgreSQL
-    actor A as Authorized admin
+    actor A as Different active admin when required
     participant O as Notification outbox
 
     P->>RPC: submit_payment_request(challenge, amount, key)
     RPC->>DB: Validate debt; insert PENDING request
     DB->>O: Insert admin in-app/outbox event
     A->>RPC: approve_payment_request(request, key)
-    RPC->>DB: Lock request; rederive debt; validate PENDING
+    RPC->>DB: Lock request; verify reviewer != participant; rederive debt
     DB->>DB: Append PAYMENT_CONFIRMED + mark APPROVED + audit
     DB->>O: Insert participant notification
     RPC-->>A: Committed result
 ```
 
-If debt changed and amount is no longer valid, approval returns a conflict and changes neither request nor ledger (BR-067). An admin may then reject it. Competing approvals serialize on the payment row; the unique ledger source guarantees one confirmed entry.
+If debt changed and amount is no longer valid, approval returns a conflict and changes neither request nor ledger (BR-067). A different active admin may then reject it when the requester is an admin participant. Competing approvals serialize on the payment row; the unique ledger source guarantees one confirmed entry. A sole admin's own payment request remains pending until another active admin exists.
 
 ## 10. Excuse Architecture
 
@@ -228,4 +230,4 @@ Use structured server logs with correlation/request ID, operation name, authenti
 - Outbox growth and poison FCM tokens need retention and deactivation policies.
 - Large ranking/history queries may later need derived materialization, but premature caches risk drift.
 - Append-only finance/audit needs privileged mutation denial, backups, and operational review.
-- A sole participating admin cannot resolve their own excuse until another admin is added; this is intentional product behavior.
+- A sole participating admin cannot resolve their own excuse/payment request or execute a self-benefiting waiver/correction until another admin is added; this is intentional product behavior.

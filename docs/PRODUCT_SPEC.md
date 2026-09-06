@@ -32,7 +32,7 @@ Detailed deterministic behavior is defined in [BUSINESS_RULES.md](BUSINESS_RULES
 
 ### Admin / Sardor
 
-Creates and manages challenges; provisions participant access; manages membership, habits, effective-dated rules, targets, deadlines, penalties, and reminders; monitors activity and statistics; reviews excuse and payment requests; performs explicit audited corrections; and resets credentials. An admin may narrow the habits covered by an excuse before approval when the UI clearly communicates the change. The MVP may have multiple admins using the same full challenge-level role, but an admin can never review their own excuse request. Admin authority is separate from participation. When an admin participates, their obligations and ranking are evaluated exactly like any other participant's.
+Creates and manages challenges; provisions participant access; manages membership, habits, effective-dated rules, targets, deadlines, penalties, and reminders; monitors activity and statistics; reviews excuse and payment requests; performs explicit audited corrections; and resets credentials. An admin may narrow the habits covered by an excuse before approval when the UI clearly communicates the change. The MVP may have multiple admins using the same full challenge-level role. Admin authority is separate from participation: a participating admin cannot review their own excuse/payment request, reduce their own penalty/debt, or beneficially correct their own historical task. Those actions require a different active admin. Normal participation and audited challenge-wide management remain allowed.
 
 ### Participant
 
@@ -64,7 +64,7 @@ A participant sees the weekly target, accumulated progress, remaining units, and
 1. From **Debt / Finance**, a participant selects a challenge with positive debt.
 2. They submit an amount no greater than that challenge's current debt.
 3. The request remains pending without changing debt.
-4. An authorized admin approves or rejects it.
+4. An authorized admin approves or rejects it. If the requester is also an admin, a different active admin must review; a sole admin's own request remains pending until another admin is added.
 5. Only approval creates a confirmed payment ledger entry; both outcomes notify the participant.
 
 ### 5.5 Excuse request
@@ -79,7 +79,7 @@ If the requester is the challenge's only admin, the request remains pending unti
 
 ### 5.6 Admin monitoring and correction
 
-The admin reviews today's status, pending and missed habits, upcoming deadlines, at-risk participants, debts, and pending payments. A historical correction requires an explicit reason and produces an audit record preserving actor, `recorded_at`, old state, and new state. It may be `COMPLETED_ON_TIME` only when an existing trusted server-side record proves the target was reached by the deadline. Without that evidence, an acknowledged completion is `COMPLETED_LATE`; a separate penalty waiver cannot convert its timing or ranking evidence to on-time.
+The admin reviews today's status, pending and missed habits, upcoming deadlines, at-risk participants, debts, and pending payments. A historical correction requires an explicit reason and produces an audit record preserving actor, `recorded_at`, old state, and new state. It may be `COMPLETED_ON_TIME` only when an existing trusted server-side record proves the target was reached by the deadline. Without that evidence, an acknowledged completion is `COMPLETED_LATE`; a separate penalty waiver cannot convert its timing or ranking evidence to on-time. A correction that improves an admin's own completion, accountability, or ranking—and any waiver/reduction of their own penalty or debt—requires a different active admin.
 
 ## 6. Information Architecture
 
@@ -191,7 +191,8 @@ MVP payment handling is declaration plus admin confirmation only. Authoritative 
 - Debt equals the sum of challenge ledger effects; payment requests alone never alter it.
 - Rankings always favor better completion performance before timing.
 - Admin corrections and financial decisions identify actor, time, reason/outcome, and prior state.
-- No admin can review their own excuse, and no historical correction receives on-time ranking treatment without pre-existing authoritative evidence.
+- No admin can review their own excuse/payment request, reduce their own penalty/debt, or beneficially correct their own historical task; server-side enforcement requires a different active admin.
+- No historical correction receives on-time ranking treatment without pre-existing authoritative evidence.
 - App-open activity feels timely; background alerts use push delivery without spam.
 - Core flows handle loading, empty, error, permission-denied, and offline states explicitly.
 
@@ -202,7 +203,7 @@ MVP payment handling is declaration plus admin confirmation only. Authoritative 
 - Notification permission denial may reduce reminder effectiveness; in-app state remains authoritative.
 - Financial terminology must not imply real payment processing.
 - Admin/participant dual roles increase the risk of UI-based authorization assumptions.
-- A sole admin's excuse request may remain pending until another admin is added, which can delay resolution.
+- A sole admin's own excuse/payment request or beneficial waiver/correction cannot be resolved until another admin is added; this intentional separation can delay resolution.
 - The MVP assumes reliable connectivity is required for authoritative completion.
 
 ## 13. Open Questions
