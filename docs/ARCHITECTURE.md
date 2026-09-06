@@ -2,7 +2,7 @@
 
 ## 1. Scope and Authority
 
-This document translates [PRODUCT_SPEC.md](PRODUCT_SPEC.md) and BR-001–BR-149 in [BUSINESS_RULES.md](BUSINESS_RULES.md) into a production-safe technical design. It does not define SQL, RLS policies, or deployment configuration. PostgreSQL is the authoritative domain boundary; Flutter is an untrusted presentation client.
+This document translates [PRODUCT_SPEC.md](PRODUCT_SPEC.md) and BR-001–BR-159 in [BUSINESS_RULES.md](BUSINESS_RULES.md) into a production-safe technical design. It does not define SQL, RLS policies, or deployment configuration. PostgreSQL is the authoritative domain boundary; Flutter is an untrusted presentation client.
 
 ## 2. System Overview
 

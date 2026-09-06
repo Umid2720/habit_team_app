@@ -2,7 +2,7 @@
 
 ## 1. Scope and Conventions
 
-This is a logical PostgreSQL design for the architecture in [ARCHITECTURE.md](ARCHITECTURE.md) and BR-001–BR-149 in [BUSINESS_RULES.md](BUSINESS_RULES.md). It is not a migration. Names and exact enum implementation may be refined when SQL is written, but invariants must not change silently.
+This is a logical PostgreSQL design for the architecture in [ARCHITECTURE.md](ARCHITECTURE.md) and BR-001–BR-159 in [BUSINESS_RULES.md](BUSINESS_RULES.md). It is not a migration. Names and exact enum implementation may be refined when SQL is written, but invariants must not change silently.
 
 Conventions:
 
