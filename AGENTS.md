@@ -23,6 +23,8 @@ Server time is authoritative. Never use device time or timezone to decide eligib
 
 Users may complete only their own currently eligible tasks and may not backdate them. The server generates completion timestamps. After a deadline, normal users cannot complete that period. An audited historical correction is `COMPLETED_ON_TIME` only when existing trusted server-side evidence proves completion by the deadline; otherwise an acknowledged completion is `COMPLETED_LATE`. Never fabricate completion time, and keep any penalty waiver separate from timing or ranking evidence. Protect important transitions with transactions, idempotency keys, and database constraints where possible.
 
+A participant may revoke only their own current completion when it came from a normal participant submission; for a weekly occurrence habit this also covers the server-resolved latest unreversed counted occurrence. Preserve the original completion/occurrence and append a server-timestamped revocation; recompute effective progress/outcome transactionally. Before the deadline the task may return to `PENDING` and be completed again with a new server timestamp; after the deadline it becomes `MISSED` or `EXCUSED` as applicable, with idempotent append-only financial effects. A participant revocation cannot alter an admin correction or contribute revoked timing evidence to ranking or streaks.
+
 ## Penalties, Payments, and Ranking
 
 Financial history is an append-only, challenge-scoped ledger. Current debt must be derived from that challenge's ledger transactions, not maintained as the sole source of truth. A future UI may aggregate debt across challenges, but authoritative approval and accounting remain challenge-scoped. Never silently delete or rewrite financial facts; waivers and corrections require explicit compensating records and audit history.
@@ -56,7 +58,7 @@ Use project-local skills deliberately:
 
 Use `brief` for design briefs, `shape` before important new screens, `typeset` for typography, `animate`/`delight` for restrained micro-interactions, `adapt` for device layouts, `clarify` for UX copy, and `unhappy` for loading/offline/error states. Do not invoke unrelated skills such as `banner-design` or `slides` unless explicitly required.
 
-Aim for a calm, serious, premium discipline product—not a generic checkbox tracker. Favor excellent typography, clear hierarchy, strong progress feedback, consistent spacing/components, tasteful celebration, restrained motion, and adaptable light/dark foundations. Avoid random gradients, excessive glassmorphism or emojis, decorative clutter, inconsistent cards, and generic AI-dashboard styling.
+Aim for a calm, serious, premium discipline product—not a generic checkbox tracker. Favor excellent typography, clear hierarchy, strong progress feedback, consistent spacing/components, tasteful celebration after authoritative server success, restrained motion, and adaptable light/dark foundations. Scale celebration from subtle partial-progress feedback through distinct habit/day/weekly completion states, provide a static/text equivalent for reduced motion, and use explicit consequence confirmation plus neutral feedback for completion revocation. Avoid random gradients, excessive glassmorphism or emojis, decorative clutter, inconsistent cards, and generic AI-dashboard styling.
 
 ## Engineering, Testing, and Delivery
 

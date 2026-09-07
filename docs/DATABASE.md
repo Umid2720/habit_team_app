@@ -2,7 +2,7 @@
 
 ## 1. Scope and Conventions
 
-This is a logical PostgreSQL design for the architecture in [ARCHITECTURE.md](ARCHITECTURE.md) and BR-001–BR-159 in [BUSINESS_RULES.md](BUSINESS_RULES.md). It is not a migration. Names and exact enum implementation may be refined when SQL is written, but invariants must not change silently.
+This is a logical PostgreSQL design for the architecture in [ARCHITECTURE.md](ARCHITECTURE.md) and BR-001–BR-184 in [BUSINESS_RULES.md](BUSINESS_RULES.md). It is not a migration. Names and exact enum implementation may be refined when SQL is written, but invariants must not change silently.
 
 Conventions:
 
@@ -14,7 +14,7 @@ Conventions:
 - Historical/event/ledger/audit rows are append-only. Current workflow projections are mutable only through controlled functions.
 - Enable RLS on every application table. Internal tables deny all client access unless an explicit read policy is documented.
 
-Recommended logical enums include challenge status (`DRAFT`, `ACTIVE`, `PAUSED`, `ENDED`), member status (`ACTIVE`, `INACTIVE`, `REMOVED`), habit type, period kind, task outcome, excuse/payment status, excuse reason, penalty mode, ledger type, delivery mode/status, and audit action. Prefer constrained enums or lookup checks over arbitrary text.
+Recommended logical enums include challenge status (`DRAFT`, `ACTIVE`, `PAUSED`, `ENDED`), member status (`ACTIVE`, `INACTIVE`, `REMOVED`), habit type, period kind, task outcome, progress event kind (including `COMPLETION_REVOKED`), excuse/payment status, excuse reason, penalty mode, ledger type, delivery mode/status, and audit action. Prefer constrained enums or lookup checks over arbitrary text.
 
 ## 2. Entity Relationship Diagram
 
@@ -142,27 +142,30 @@ erDiagram
 ### `task_instances`
 
 - **Purpose:** Concrete historical obligation for one membership, habit, and daily/weekly period.
-- **Columns:** `id`, `challenge_id`, `challenge_member_id`, `habit_id`, `habit_rule_version_id`, `period_kind`, `period_start_date`, `period_end_date`, `timezone_name`, `opens_at`, `deadline_at`, frozen `habit_type`, `original_target`, `unit`, `penalty_mode`, `penalty_amount`, cached `current_progress`, `was_completed boolean`, `outcome_status`, `authoritative_completed_at null`, `created_at`, `updated_at`.
-- **Keys:** PK; FKs to challenge/member/habit/rule. Composite FKs/validation ensure all parents share the challenge.
+- **Columns:** `id`, `challenge_id`, `challenge_member_id`, `habit_id`, `habit_rule_version_id`, `period_kind`, `period_start_date`, `period_end_date`, `timezone_name`, `opens_at`, `deadline_at`, frozen `habit_type`, `original_target`, `unit`, `penalty_mode`, `penalty_amount`, cached `current_progress`, `was_completed boolean`, `outcome_status`, `authoritative_completed_at null`, `effective_participant_completion_event_id null`, `created_at`, `updated_at`.
+- **Keys:** PK; FKs to challenge/member/habit/rule. `effective_participant_completion_event_id` is a nullable FK to `task_progress_events` added after both tables exist. Composite FKs/validation ensure all parents share the challenge.
 - **Constraints:** unique `(challenge_member_id,habit_id,period_kind,period_start_date)`; `deadline_at > opens_at`; targets positive; progress nonnegative; outcome/fact consistency:
   - `COMPLETED_ON_TIME` requires `was_completed=true`, nonnull `authoritative_completed_at <= deadline_at`;
   - `COMPLETED_LATE` requires `was_completed=true` and permits null authoritative completion time or a time after deadline;
-  - `PENDING`, `MISSED`, and `EXCUSED` require `was_completed=false`; `EXCUSED` never means completed.
+  - `PENDING`, `MISSED`, and `EXCUSED` require `was_completed=false`, null `authoritative_completed_at`, and null `effective_participant_completion_event_id`; `EXCUSED` never means completed;
+  - a nonnull `effective_participant_completion_event_id` is allowed only for `COMPLETED_ON_TIME` and must reference an unreversed event for this task, written by its participant through the normal participant path, whose `accepted_at` equals `authoritative_completed_at`; admin-established/finalized completion does not populate this pointer. This cross-table invariant is enforced by controlled functions and a defense-in-depth constraint trigger if practical.
 - **Indexes:** participant Today `(challenge_member_id,outcome_status,opens_at,deadline_at)`; history `(challenge_member_id,period_start_date desc)`; admin monitor `(challenge_id,period_start_date,outcome_status,deadline_at)`; missed `(challenge_id,outcome_status,deadline_at) where outcome_status='MISSED'`; ranking `(challenge_id,deadline_at,outcome_status)`.
-- **Mutability:** Frozen schedule/rule fields never change. Current progress/outcome projection changes only in transactional RPC/worker; events/corrections preserve history.
+- **Mutability:** Frozen schedule/rule fields never change. Current progress/outcome/effective-source projection changes only in transactional RPC/worker and is rebuildable from unreversed events plus privileged corrections; events/corrections preserve history.
 - **Authority/RLS:** Participant reads own tasks; authorized team/admin views are scoped. Clients cannot directly update progress, status, target, or timestamps.
 
-The separate `was_completed`, `outcome_status`, and authoritative timestamp preserve product truth. Product status maps directly from `outcome_status`; the extra fact prevents `EXCUSED` from being interpreted as completion and permits `COMPLETED_LATE` acknowledgment without fabricated `completed_at` (BR-143–BR-149).
+The separate `was_completed`, `outcome_status`, authoritative timestamp, and participant-event pointer preserve product truth. Product status maps directly from `outcome_status`; the extra fact prevents `EXCUSED` from being interpreted as completion and permits `COMPLETED_LATE` acknowledgment without fabricated `completed_at` (BR-143–BR-149). The pointer makes participant revocation safe and efficient: it exists only for the current normal participant completion, is cleared when that event is reversed or a privileged decision supersedes it, and prevents the participant RPC from altering admin-finalized state.
 
 ### `task_progress_events`
 
-- **Purpose:** Immutable authoritative progress and completion evidence.
-- **Columns:** `id`, `task_instance_id`, `actor_id`, `event_kind`, `amount numeric`, `occurrence_local_date date null`, `accepted_at timestamptz`, `request_id`, optional safe `metadata jsonb`.
-- **Keys:** PK; FKs to task/profile.
-- **Constraints:** unique `request_id`; amount positive; event kind compatible with frozen habit type; occurrence date required only for occurrence events; partial unique `(task_instance_id,occurrence_local_date)` for counted weekly occurrences.
-- **Indexes:** `(task_instance_id,accepted_at)`, `(actor_id,accepted_at desc)`.
-- **Mutability:** Append-only. Task aggregate updates in the same transaction; aggregate can be reconciled from events.
-- **Authority/RLS:** Participant reads own events; admin reads challenge events. Insert only through progress/completion RPC; no update/delete.
+- **Purpose:** Immutable authoritative progress, completion, and participant-revocation evidence.
+- **Columns:** `id`, `task_instance_id`, `actor_id`, `event_kind`, `amount numeric`, `occurrence_local_date date null`, `accepted_at timestamptz`, `reverses_event_id uuid null`, `request_id`, optional safe `metadata jsonb`.
+- **Keys:** PK; FKs to task/profile; `reverses_event_id` self-references `task_progress_events.id`.
+- **Constraints:** unique `request_id`; unique nonnull `reverses_event_id`; normal progress/completion/occurrence events require `amount > 0` and null `reverses_event_id`; `COMPLETION_REVOKED` requires `amount = 0`, a nonnull target, and no occurrence date. A revocation target must be an unreversed normal participant event for the same task/actor that currently establishes completion, or for a weekly occurrence habit the latest unreversed normal participant occurrence resolved under the task lock. Occurrence date is required only for occurrence events. At most one **effective** counted occurrence per task/local date is enforced while allowing an earlier event plus its immutable revocation to coexist.
+- **Indexes:** `(task_instance_id,accepted_at)`, `(actor_id,accepted_at desc)`, `(reverses_event_id) where reverses_event_id is not null`.
+- **Mutability:** Strictly append-only. Positive events are never marked or edited in place; a revocation is a new row. Task aggregate and effective completion pointer update in the same transaction and can be reconciled from positive events for which no valid reversal row exists.
+- **Authority/RLS:** Participant reads own events; admin reads challenge events. Insert only through progress/completion/revocation RPCs; no direct insert/update/delete.
+
+The safe MVP correction model reverses the whole normal participant event that currently caused the target crossing, not an arbitrary historical amount. For quantity/duration, remaining unreversed events become the corrected effective progress (for example, reversing the target-crossing `+3` from `7/10 -> 10/10` restores `7/10`; reversing a single erroneous `+10` restores `0/10`, after which a new `+7` may be submitted while open). Boolean/daily occurrence removes its confirmation. Weekly occurrence uses task-locked last-in-first-out reversal of the latest unreversed occurrence, so `revoke_own_completion(task_id, request_id)` also works at partial weekly progress without accepting a client-selected event ID. This keeps history immutable and avoids negative client-supplied deltas. All progress views sum only unreversed positive contributions; the effective completion time is the acceptance time at which those current contributions reach the target, cached with the corresponding event pointer. Revoked timestamps are therefore unavailable to ranking queries.
 
 ### `task_corrections`
 
@@ -172,7 +175,7 @@ The separate `was_completed`, `outcome_status`, and authoritative timestamp pres
 - **Constraints:** unique `request_id`; nonblank reason; old/new states differ; an on-time correction requires trusted evidence fields with `evidence_timestamp <= task.deadline_at`; a correction that improves an admin participant's completion/accountability/ranking requires `actor_id` to differ from the task participant. Evidence and actor/participant rules require secured RPC/trigger enforcement because they are cross-row.
 - **Indexes:** `(task_instance_id,recorded_at)`, `(actor_id,recorded_at desc)`.
 - **Mutability:** Append-only. Evidence pointer must resolve to a pre-existing trusted server record; client-supplied metadata never qualifies.
-- **Authority/RLS:** Participant may read corrections to own tasks; admins read challenge corrections; only the secured admin RPC inserts after classifying whether the transition is beneficial and enforcing a different active admin when required.
+- **Authority/RLS:** Participant may read corrections to own tasks; admins read challenge corrections; only the secured admin RPC inserts after classifying whether the transition is beneficial and enforcing a different active admin when required. Participant self-revocation is represented in `task_progress_events`, not this privileged correction table.
 
 ## 7. Excuses
 
@@ -249,7 +252,7 @@ Signed amounts were chosen because challenge debt is directly `SUM(amount)`. A v
 - **Keys:** PK; FKs to challenge/member/habit/task.
 - **Constraints:** unique `(challenge_id,event_type,source_type,source_id)`; payload limited to safe display metadata; source compatible with event type.
 - **Indexes:** feed `(challenge_id,occurred_at desc)`; source uniqueness.
-- **Mutability:** Append-only; corrections publish a new event if product requires, not rewrite old feed evidence.
+- **Mutability:** Append-only; corrections and participant revocations publish a linked new event when the original completion was published, never rewriting old feed evidence.
 - **Authority/RLS:** Visible only to authorized challenge users; insert only from domain transactions. Suitable for narrow Realtime publication.
 
 ### `notification_preferences`
@@ -299,7 +302,7 @@ Signed amounts were chosen because challenge debt is directly `SUM(amount)`. A v
 - **Purpose:** Immutable evidence of sensitive/admin actions; never the primary business table.
 - **Columns:** `id`, `challenge_id null`, `actor_id null`, `action`, `target_table`, `target_id`, `reason null`, `old_state jsonb null`, `new_state jsonb null`, `request_id`, `created_at`, `correlation_id null`.
 - **Keys:** PK; FKs to challenge/profile when present.
-- **Constraints:** unique `(action,request_id)`; target fields required; old/new/reason required according to action; server-generated time.
+- **Constraints:** unique `(action,request_id)`; target fields required; old/new/reason required according to action; server-generated time. Participant completion revocation records actor and old/new projection, with reason optional because the explicit act itself is the domain fact.
 - **Indexes:** `(challenge_id,created_at desc)`, `(target_table,target_id,created_at)`, `(actor_id,created_at desc)`.
 - **Mutability:** Strictly append-only; no client update/delete. Audit references business rows rather than replacing them.
 - **Authority/RLS:** Challenge admins receive scoped read access; participants may receive narrowly defined audit visibility for their own corrections. Inserts only from trusted functions.
@@ -316,8 +319,8 @@ Important database-enforced constraints are:
 6. Non-overlapping challenge pauses; one open pause naturally enforced by range/partial uniqueness.
 7. Habit type immutable after historical use.
 8. Non-overlapping habit-rule effective ranges; unique habit/effective start; positive target; valid schedule/reminder/penalty fields.
-9. One task per member/habit/period identity; deadline after open; frozen values valid; task outcome/completion fact/timestamp consistency.
-10. Unique progress `request_id`; positive amount; event/type compatibility; at most one counted weekly occurrence per task/local day.
+9. One task per member/habit/period identity; deadline after open; frozen values valid; task outcome/completion fact/timestamp/effective-participant-event consistency.
+10. Unique progress/revocation `request_id`; conditionally valid amounts and event types; unique reversal target; same-task/actor/current-source reversal; at most one effective counted weekly occurrence per task/local day.
 11. Unique correction request; nonblank reason; old/new differ; on-time corrections require validated trusted evidence by deadline; beneficial corrections require actor different from an admin participant target.
 12. Excuse range/reason/status validity; `OTHER` text required; active reviewer differs from participant; terminal review fields required.
 13. Unique requested habit per excuse; approved weekly reduction within original target.
@@ -330,14 +333,14 @@ Important database-enforced constraints are:
 20. Unique notification/device/channel outbox job; valid attempt/status timestamps.
 21. Unique audit action/request and required target/decision detail.
 
-Cross-row/cross-table rules that a `CHECK` cannot express—currency equality, active reviewer/actor independence from participant or beneficiary, beneficial-correction classification, trusted evidence validation, debt-at-approval, cumulative excuse reductions, and compensation limits—belong in locked security-definer functions with tightly controlled execute permissions, with triggers only as defense in depth.
+Cross-row/cross-table rules that a `CHECK` cannot express—currency equality, active reviewer/actor independence from participant or beneficiary, beneficial-correction classification, trusted evidence validation, valid revocation target/effective occurrence, debt-at-approval, cumulative excuse reductions, and compensation limits—belong in locked security-definer functions with tightly controlled execute permissions, with triggers only as defense in depth.
 
 ## 12. Query-Focused Indexes
 
 Keep indexes tied to expected access:
 
 - **Participant Today:** task `(member,outcome,opens_at,deadline_at)`.
-- **Participant task history:** `(member,period_start_date desc)` plus progress/task correction indexes.
+- **Participant task history:** `(member,period_start_date desc)` plus progress/reversal/task correction indexes.
 - **Participant finance:** ledger `(member,created_at desc)` and payment `(member,submitted_at desc)`.
 - **Participant notifications:** `(recipient,read_at,created_at desc)`.
 - **Admin today/missed monitoring:** task `(challenge,period_start_date,outcome,deadline_at)` and partial missed index.
@@ -355,13 +358,18 @@ Avoid indexing mutable low-selectivity flags alone and avoid duplicate indexes a
 | Double-tap Complete | Unique progress `request_id`; task row lock; one terminal outcome |
 | Two completion requests | `SELECT ... FOR UPDATE`; revalidate owner/time/state; event/task uniqueness |
 | Deadline worker vs completion | Same task row lock; server time recheck; only one valid terminal transition |
+| Double/replayed revoke | Unique revocation `request_id`; unique `reverses_event_id`; task lock; prior result or typed conflict |
+| Revoke vs deadline worker | Same task row lock and post-lock server-time recheck; before deadline returns pending, after deadline closes missed/excused; unique task penalty source |
+| Weekly close vs occurrence revoke | Same weekly task row lock; second transaction recomputes unreversed occurrences, eligible target, and missing units; unique reversal and task-penalty sources |
+| Revoke vs re-completion | Same task row lock; re-completion is valid only after revocation and by deadline; new event/time replaces no history |
+| Revoke after admin finalization | Null/superseded participant completion pointer plus correction check rejects normal revoke |
 | Deadline worker retry | `SKIP LOCKED` batches; terminal-state predicate; unique task outcome/source |
 | Penalty retry | Unique ledger `(challenge,entry_type,source_type,source_id)` for task penalty |
 | Payment approval retry | Payment row lock; reviewer/participant independence; pending compare-and-set; unique ledger payment source/request |
 | Two payment reviewers | Active-admin and self-review checks under payment row lock; first terminal transition wins; second receives conflict |
 | Excuse review retry | Excuse row lock; pending compare-and-set; unique effects/corrections/waivers |
 | Two excuse reviewers | Excuse row lock; reviewer independence check; first terminal decision wins |
-| Weekly duplicate occurrence | Server-derived local date plus partial unique `(task,occurrence_local_date)` |
+| Weekly duplicate occurrence | Server-derived local date plus task lock/constraint trigger enforcing one unreversed effective occurrence per local date; historical reversed occurrence may coexist |
 | Notification retry | Unique notification source and unique outbox notification/channel; dispatcher lock/backoff |
 
 All multi-row transitions commit state, ledger, audit, activity, notification, and outbox effects in one transaction. Functions re-read authoritative state after locking instead of trusting client snapshots.
@@ -369,7 +377,7 @@ All multi-row transitions commit state, ledger, audit, activity, notification, a
 ## 14. RLS and Security Expectations
 
 - Participants generally read their own sensitive task/progress/finance/excuse/payment records and permitted shared challenge habits, ranking, roster, and activity.
-- Participants cannot directly update task outcomes/timestamps/aggregates, ledger, payment reviews, excuse reviews/effects, admin grants, historical rules, pauses, or audit rows.
+- Participants cannot directly update task outcomes/timestamps/aggregates, reverse arbitrary progress, ledger, payment reviews, excuse reviews/effects, admin grants, historical rules, pauses, or audit rows. They may call only the narrow owner-bound revocation RPC for a current normal participant completion.
 - Challenge admins receive challenge-scoped management/read authority, always rechecked inside sensitive RPCs.
 - Admin participation does not grant authority; active `challenge_admins` does. A participating admin cannot review their own excuse/payment request, reduce their own debt, or beneficially correct their own task.
 - Secured functions resolve task participant, request participant, or ledger beneficiary after locking and require a different active challenge admin for prohibited self-actions. RLS/UI visibility alone is insufficient.
@@ -409,6 +417,7 @@ Final RLS SQL belongs in migrations and a future `SECURITY.md`, with automated r
 - PostgreSQL exclusion constraints may require `btree_gist`; migration planning must confirm supported extensions.
 - Cross-table invariants need carefully permissioned functions and possibly defense-in-depth triggers; RLS alone cannot enforce them.
 - Beneficial-correction classification must use a tested server-side transition policy; a client-provided “beneficial” flag is never trusted.
+- Revocation reconciliation must prove the target event is the current participant completion source and keep revoked evidence out of aggregates, timing, weekly counts, and streaks under every race ordering.
 - Frozen local-date/timezone calculations require DST boundary test fixtures.
 - JSON audit snapshots need size limits and sensitive-field redaction.
 - Append-only tables require retention/partitioning review only after real volume is measured.

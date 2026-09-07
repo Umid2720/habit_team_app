@@ -36,7 +36,7 @@ Creates and manages challenges; provisions participant access; manages membershi
 
 ### Participant
 
-Uses an admin-provisioned username and temporary password, replaces that password on first successful login, views current obligations, records progress, completes eligible tasks, follows team activity and rankings, reviews penalties and challenge debt, submits excuse and payment requests, and configures notification preferences. A participant cannot mutate administrative data or edit history.
+Uses an admin-provisioned username and temporary password, replaces that password on first successful login, views current obligations, records progress, completes eligible tasks, follows team activity and rankings, reviews penalties and challenge debt, submits excuse and payment requests, and configures notification preferences. A participant cannot mutate administrative data or rewrite history, but may append an authoritative self-revocation of their own current participant-submitted completion.
 
 ## 5. Primary User Journeys
 
@@ -52,14 +52,22 @@ Uses an admin-provisioned username and temporary password, replaces that passwor
 1. A participant opens **Today** and sees pending, completed, or missed obligations and current progress.
 2. For quantity or duration habits, the participant records partial progress while the window is open.
 3. A valid server submission that reaches the target completes the obligation.
-4. The app gives restrained immediate positive feedback and publishes eligible team activity.
+4. After the server accepts the result, the app gives feedback proportional to partial progress, one completed habit, all eligible daily habits, or a completed weekly target, and publishes eligible team activity.
 5. After the deadline, incomplete obligations become missed and penalties are recorded when configured.
 
-### 5.3 Weekly target
+### 5.3 Completion feedback and self-revocation
 
-A participant sees the weekly target, accumulated progress, remaining units, and period end. The MVP challenge week runs Monday 00:00 through Sunday 23:59:59 in the challenge timezone, and at most one occurrence per challenge-local calendar day counts. After the deadline, the system evaluates missing eligible units and creates the configured per-missing-unit penalty.
+Partial progress receives only a small confirmation, progress animation, and optional light haptic. One completed habit receives a completed-state transition, check animation, brief tasteful confetti, concise success message, and light haptic. Completing all eligible daily habits receives a stronger but short day-complete state with streak/status reinforcement. Reaching a weekly target receives a distinct weekly-target completion state. None of these celebrations begins before authoritative server acceptance or a reconciled authoritative update. Example wording such as “Kitob o‘qish muvaffaqiyatli bajarildi! Barakalloh!” remains refinable localized UI copy, not a hard-coded business invariant.
 
-### 5.4 Payment declaration
+Motion is restrained, interruptible, and non-blocking. When system or user reduced motion is active, non-essential animation and confetti are reduced or disabled while static state, iconography, and text still communicate success clearly; haptics remain optional and respect available system/app preferences where practical. The product remains calm, disciplined, and trustworthy; it avoids childish effects, excessive emojis, random gradients, repeated disruptive full-screen celebration, and completion celebration inside serious finance or administrative flows.
+
+A participant may choose to revoke their own current completion when it came from a normal participant submission. The app shows explicit confirmation using the latest authoritative task state: before the deadline it explains that the task will become pending again; after the deadline it explains that the task will become missed unless an excuse applies and may create the configured penalty. After confirmation, Flutter calls the protected server operation and waits for its result. Success uses neutral feedback such as “Belgilash bekor qilindi,” never celebration. The original completion and revocation remain visible in authorized history; the current UI shows the recomputed effective state.
+
+### 5.4 Weekly target
+
+A participant sees the weekly target, accumulated progress, remaining units, and period end. The MVP challenge week runs Monday 00:00 through Sunday 23:59:59 in the challenge timezone, and at most one unreversed effective occurrence per challenge-local calendar day counts. They may revoke the latest unreversed occurrence through the same confirmed, server-authoritative flow; another valid occurrence may count while the period is open. After the deadline, the system evaluates missing eligible units and creates the configured per-missing-unit penalty.
+
+### 5.5 Payment declaration
 
 1. From **Debt / Finance**, a participant selects a challenge with positive debt.
 2. They submit an amount no greater than that challenge's current debt.
@@ -67,7 +75,7 @@ A participant sees the weekly target, accumulated progress, remaining units, and
 4. An authorized admin approves or rejects it. If the requester is also an admin, a different active admin must review; a sole admin's own request remains pending until another admin is added.
 5. Only approval creates a confirmed payment ledger entry; both outcomes notify the participant.
 
-### 5.5 Excuse request
+### 5.6 Excuse request
 
 1. A participant requests an excuse for a defined time range, selects affected habits, and supplies a reason.
 2. Unselected habits remain due; an excuse is not automatically a whole-day exemption.
@@ -77,7 +85,7 @@ A participant sees the weekly target, accumulated progress, remaining units, and
 
 If the requester is the challenge's only admin, the request remains pending until another full challenge admin is added. MVP does not introduce participant voting or a moderator role for this case.
 
-### 5.6 Admin monitoring and correction
+### 5.7 Admin monitoring and correction
 
 The admin reviews today's status, pending and missed habits, upcoming deadlines, at-risk participants, debts, and pending payments. A historical correction requires an explicit reason and produces an audit record preserving actor, `recorded_at`, old state, and new state. It may be `COMPLETED_ON_TIME` only when an existing trusted server-side record proves the target was reached by the deadline. Without that evidence, an acknowledged completion is `COMPLETED_LATE`; a separate penalty waiver cannot convert its timing or ranking evidence to on-time. A correction that improves an admin's own completion, accountability, or ranking—and any waiver/reduction of their own penalty or debt—requires a different active admin.
 
@@ -120,6 +128,7 @@ Navigation visibility is not authorization; all protected actions require server
 - Boolean/checkbox, quantity/counter, duration, daily-occurrence, and weekly-target habits
 - Daily and weekly periods with challenge-timezone windows
 - Partial progress for quantity habits
+- Append-only participant revocation of an erroneous current participant completion, including safe re-completion while still open
 - Versioned/effective-dated targets, penalties, deadlines, and reminders
 - Explicit obligation statuses and immutable historical context
 
@@ -138,11 +147,12 @@ Navigation visibility is not authorization; all protected actions require server
 - Realtime app-open team activity
 - Push notifications for background delivery
 - Notification category preferences
-- Restrained completion celebration
+- Server-confirmed, level-appropriate completion celebration with reduced-motion equivalents
+- Neutral, consequence-aware completion-revocation confirmation and feedback
 
 ### Statistics and monitoring
 
-Participant views may show completion rate, completed obligations, unexcused misses, excused misses, current and best daily discipline streak, penalty count/amount, total paid, outstanding debt, normalized completion timing, and rank. Excused history supports habit, reason, and timeline views. Filters conceptually include today, 7 days, 30 days, challenge lifetime, custom range, habit, and participant. Admin views add attention/risk, deadlines, debts, excuse requests, and payment requests.
+Participant views may show completion rate, completed obligations, unexcused misses, excused misses, participant self-revocations, current and best daily discipline streak, penalty count/amount, total paid, outstanding debt, normalized completion timing, and rank. Self-revocations are reported separately and do not themselves add or subtract ranking score. Excused history supports habit, reason, and timeline views. Filters conceptually include today, 7 days, 30 days, challenge lifetime, custom range, habit, and participant. Admin views add attention/risk, deadlines, debts, excuse requests, and payment requests.
 
 ## 8. Major Domain Entities
 
@@ -154,7 +164,7 @@ Participant views may show completion rate, completed obligations, unexcused mis
 - **Habit Rule Version:** effective-dated schedule, target, penalty, and reminder terms.
 - **Obligation:** one participant's required habit outcome for one period, bound to the applicable rule version.
 - **Progress Event:** authoritative increment or duration recorded against an active obligation.
-- **Completion/Correction Event:** server-recorded outcome or audited historical adjustment.
+- **Completion/Revocation/Correction Event:** immutable server-recorded progress or completion evidence, a participant revocation that invalidates a specific participant event for effective state, or an audited privileged historical adjustment.
 - **Ledger Transaction:** append-only challenge financial event such as penalty, confirmed payment, waiver, or adjustment.
 - **Payment Request:** participant declaration tied to one user and challenge, reviewed by an authorized admin.
 - **Excuse Request:** a participant's requested time range, reason, and selected habits, with an audited admin decision.
@@ -166,7 +176,7 @@ These are conceptual entities, not a database schema.
 
 ## 9. MVP Boundary
 
-The MVP includes one Flutter app, temporary-password provisioned access, one full challenge-level admin role assignable to multiple users, challenge/membership administration, supported habit types, manual duration progress, effective-dated rules/timezones, server-authoritative completion, partial quantity progress, independent selective excuse review, daily discipline streaks, penalties and derived debt, payment approval, fair ranking, essential statistics, realtime in-app activity, FCM notifications, preferences, and audit history for sensitive changes.
+The MVP includes one Flutter app, temporary-password provisioned access, one full challenge-level admin role assignable to multiple users, challenge/membership administration, supported habit types, manual duration progress, effective-dated rules/timezones, server-authoritative completion, append-only participant completion revocation, partial quantity progress, independent selective excuse review, daily discipline streaks, penalties and derived debt, payment approval, fair ranking, essential statistics, realtime in-app activity, FCM notifications, preferences, level-appropriate accessible completion celebration, and audit history for sensitive changes.
 
 MVP payment handling is declaration plus admin confirmation only. Authoritative completion requires successful server receipt by the deadline; offline drafts may improve UX later but cannot establish completion.
 
@@ -193,13 +203,15 @@ MVP payment handling is declaration plus admin confirmation only. Authoritative 
 - Admin corrections and financial decisions identify actor, time, reason/outcome, and prior state.
 - No admin can review their own excuse/payment request, reduce their own penalty/debt, or beneficially correct their own historical task; server-side enforcement requires a different active admin.
 - No historical correction receives on-time ranking treatment without pre-existing authoritative evidence.
+- A participant can revoke only their own current participant-submitted completion; original evidence survives, effective statistics/ranking/streaks exclude it, and any later valid completion receives a new server timestamp.
+- Completion celebration occurs only after authoritative success, matches the achievement level, remains non-blocking, and has a clear reduced-motion equivalent; revocation feedback is neutral and consequence-aware.
 - App-open activity feels timely; background alerts use push delivery without spam.
 - Core flows handle loading, empty, error, permission-denied, and offline states explicitly.
 
 ## 12. Risks and Assumptions
 
 - Incorrect period/timezone handling could corrupt deadlines, penalties, and ranking history.
-- Concurrent progress, deadline evaluation, payment review, or correction can double-apply effects without idempotency and constraints.
+- Concurrent progress, completion revocation/re-completion, deadline evaluation, payment review, or correction can double-apply effects without shared task locks, idempotency, and constraints.
 - Notification permission denial may reduce reminder effectiveness; in-app state remains authoritative.
 - Financial terminology must not imply real payment processing.
 - Admin/participant dual roles increase the risk of UI-based authorization assumptions.
@@ -223,6 +235,7 @@ None currently.
 - **Eligible weekly target:** Original weekly target minus explicitly approved excused units.
 - **Deadline:** Server-evaluated end of the completion window.
 - **Normalized completion time:** Fraction of the available window elapsed when completion occurred.
+- **Revoked completion:** Preserved participant completion evidence that a later authoritative participant revocation excludes from current progress, fulfillment, ranking timing, and streak calculations.
 - **Debt:** Derived outstanding financial amount for a user in one challenge.
 - **Ledger:** Append-only source of truth for penalties, payments, waivers, and adjustments.
 - **Payment request:** Non-monetary declaration awaiting admin review.

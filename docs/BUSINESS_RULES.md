@@ -2,7 +2,7 @@
 
 ## 1. Scope and Authority
 
-This document defines testable product rules for challenge membership, obligations, completion, penalties, payments, ranking, reminders, and corrections. [PRODUCT_SPEC.md](PRODUCT_SPEC.md) defines product purpose, journeys, scope, and entities. `AGENTS.md` remains the concise invariant authority; a conflict must be resolved explicitly rather than implemented silently.
+This document defines testable product rules for challenge membership, obligations, completion/revocation, penalties, payments, ranking, reminders, feedback, and corrections. [PRODUCT_SPEC.md](PRODUCT_SPEC.md) defines product purpose, journeys, scope, and entities. `AGENTS.md` remains the concise invariant authority; a conflict must be resolved explicitly rather than implemented silently.
 
 ## 2. Challenge, Roles, and Access
 
@@ -14,7 +14,7 @@ This document defines testable product rules for challenge membership, obligatio
 - **BR-006:** User identity, challenge participation, and administrative authorization are separate concepts.
 - **BR-007:** A user may simultaneously be a ranked participant and an admin/sardor in the same challenge.
 - **BR-008:** Participation never grants administrative authority. Every administrative mutation requires an explicit server-verified role or permission.
-- **BR-009:** Ordinary participants cannot manage membership or rules, correct history, waive penalties, approve payments, or access admin-only monitoring.
+- **BR-009:** Ordinary participants cannot manage membership or rules, perform privileged historical corrections, waive penalties, approve payments, or access admin-only monitoring. Their narrow append-only revocation of their own current participant-submitted completion is governed by BR-160–BR-175 and is not administrative correction authority.
 - **BR-010:** Admin participation uses the same obligation, penalty, and ranking rules as other participants; admin status provides no ranking advantage. MVP may assign the same full challenge-level `ADMIN`/`SARDOR` role to multiple users; granular moderator permissions are V2.
 
 ## 3. Membership and Eligibility
@@ -46,24 +46,24 @@ This document defines testable product rules for challenge membership, obligatio
 - **BR-029:** Client timestamps, local timezone, and device clock are informational only and cannot establish validity. Changing a phone clock provides no advantage.
 - **BR-030:** A normal participant may mutate only their own obligation while the server determines it is open and eligible.
 - **BR-031:** Partial progress is accepted only during the active window. Each operation must be authenticated, challenge-scoped, non-negative, and idempotent.
-- **BR-032:** Progress cannot be reduced or reassigned by a normal participant. Corrections use the audited admin path.
+- **BR-032:** A normal participant cannot overwrite, arbitrarily reduce, or reassign progress. The only self-reduction path is the append-only revocation of the participant event that currently establishes their completion under BR-160–BR-175; all other historical corrections use the audited admin path.
 - **BR-033:** The authoritative completion time is the server timestamp at which accepted progress first reaches the target, or at which a valid boolean/daily occurrence is accepted.
 - **BR-034:** Progress beyond a target may be retained for analytics, but it does not create extra completion credit unless a future rule explicitly defines it.
 - **BR-035:** A normal participant cannot complete or add progress after `deadline_at` and cannot backdate an operation. A server-accepted event exactly at `deadline_at` is on time.
 - **BR-036:** Authoritative completion requires a successful server submission by the deadline. Offline local actions may be shown as unsynced drafts but cannot establish completion or timeliness; a participant cannot later backdate them. Audited admin correction is the only exception path.
-- **BR-037:** Past periods are read-only for normal participants.
+- **BR-037:** Past periods are read-only for normal participant progress/completion submissions. A participant may still append a permitted revocation of their own current participant-submitted completion under BR-160–BR-175, after which server time determines the closed-period outcome and financial effects.
 
 ## 6. Obligation Statuses and Transitions
 
 - **BR-038:** Every obligation uses one of at least: `PENDING`, `COMPLETED_ON_TIME`, `MISSED`, `COMPLETED_LATE`, or `EXCUSED`.
 - **BR-039:** A newly opened eligible obligation starts `PENDING`.
-- **BR-040:** A participant can cause only `PENDING -> COMPLETED_ON_TIME`, through a valid server-accepted completion at or before the deadline.
+- **BR-040:** Through normal progress/completion submission, a participant can cause only `PENDING -> COMPLETED_ON_TIME` at or before the deadline. The separate revocation operation may make that state less favorable or neutral as defined by BR-160–BR-175.
 - **BR-041:** Partial progress that remains below target does not change `PENDING` status.
 - **BR-042:** After the deadline, the system deterministically changes an incomplete eligible `PENDING` obligation to `MISSED` exactly once.
 - **BR-043:** `COMPLETED_LATE` is not available to normal participants. It records an audited admin-recognized late outcome and does not count as on-time fulfillment.
 - **BR-044:** `EXCUSED` means the obligation was not completed but its miss was approved or neutralized. It is never equivalent to `COMPLETED_ON_TIME` and requires an authorized admin decision or deterministic audited policy such as pause/deactivation.
 - **BR-045:** Admin corrections may establish `COMPLETED_ON_TIME`, `COMPLETED_LATE`, `MISSED`, or `EXCUSED` only through an append-only correction event that preserves the previous state. `COMPLETED_ON_TIME` additionally requires the authoritative evidence defined in BR-143–BR-145.
-- **BR-046:** Repeating the same transition request must not create duplicate completion, correction, activity, or penalty effects.
+- **BR-046:** Repeating the same transition request must not create duplicate completion, revocation, correction, activity, or penalty effects.
 
 ## 7. Penalties and Financial Ledger
 
@@ -116,12 +116,12 @@ Example: Aziz completes 100/100 near each deadline; Kamron completes 98/100 earl
 - **BR-082:** User-selectable delivery modes are `PUSH_AND_IN_APP`, `IN_APP_ONLY`, and `DISABLED` where applicable. Default is push plus in-app when platform permission exists; push follows platform permission and applicable settings, while authoritative event history remains in-app.
 - **BR-083:** A habit rule may define reminder start, reminder end, interval, default template, and optional admin-edited template.
 - **BR-084:** Reminder timing is evaluated in the challenge timezone using the bound rule version and authoritative time.
-- **BR-085:** Stop reminders when the obligation completes or its reminder/deadline window ends. Never send stale reminders after the window.
+- **BR-085:** Stop reminders while the obligation is effectively complete or when its reminder/deadline window ends. If a valid pre-deadline revocation returns it to `PENDING`, applicable remaining reminders may resume; never send stale reminders after the window.
 - **BR-086:** Different habits have independent schedules. A Fajr window of 05:00–06:30 cannot inherit Reading's evening reminder schedule.
 - **BR-087:** Reading with deadline 23:00 may schedule reminders at 21:00, 21:30, 22:00, and 22:30 when configured; any remaining reminders stop immediately after completion.
-- **BR-088:** A valid completion may create one team activity event containing participant, habit, completion time, event type, and challenge.
+- **BR-088:** A valid completion may create one team activity event containing participant, habit, completion time, event type, and challenge. If that completion is revoked after publication, preserve it and append a corresponding revocation/correction activity event under BR-169.
 - **BR-089:** App-open feeds may receive Supabase Realtime updates. App-closed/background alerts require push delivery; Realtime is not a push substitute.
-- **BR-090:** Completion feedback may use a brief, tasteful celebration. It must not obstruct the next action or become excessive.
+- **BR-090:** Completion feedback follows the authoritative, level-appropriate, reduced-motion-aware celebration rules in BR-176–BR-184. It must not obstruct the next action or become excessive.
 - **BR-091:** The MVP avoids spam through category preferences, deduplication, and completion/window suppression. Every important event from BR-081 creates an in-app history record even when push is unavailable; digest delivery is a future option.
 
 Example activity: “Kamron completed Gym.”
@@ -138,16 +138,16 @@ Example: Sardor excuses Aziz's missed Fajr after reviewing a valid reason. The o
 
 ## 12. Concurrency and Idempotency
 
-- **BR-097:** Progress updates, completion, deadline closure, penalty creation, payment submission/review, and admin corrections require stable idempotency handling.
+- **BR-097:** Progress updates, completion, participant revocation/re-completion, deadline closure, penalty creation, payment submission/review, and admin corrections require stable idempotency handling.
 - **BR-098:** Database constraints should prevent duplicate obligation periods, duplicate source-linked ledger transactions, multiple pending requests for the same user/challenge, and repeated terminal payment decisions.
 - **BR-099:** Operations that change both workflow state and ledger/audit effects are transactional: either every required effect commits or none does.
 - **BR-100:** Server-side logic must re-read authoritative state at mutation time and reject stale or unauthorized commands rather than trusting client-cached debt, status, role, or deadline data.
-- **BR-101:** Concurrent attempts to complete the same obligation may return the already-established result but cannot create duplicate activity or financial effects.
+- **BR-101:** Concurrent completion, revocation, or re-completion attempts on the same obligation serialize on authoritative task state; they may return the already-established result or a typed conflict but cannot create duplicate activity or financial effects.
 - **BR-102:** Scheduled deadline processing must be safely repeatable and converge on one missed status and one applicable penalty per obligation.
 
 ## 13. Statistics
 
-- **BR-103:** Participant statistics distinguish completion rate, completed obligations, unexcused misses, excused misses, current daily discipline streak, best streak, penalty count, total penalty amount, total paid, outstanding debt, normalized timing, and rank. Excused history supports breakdown by habit, reason, and timeline.
+- **BR-103:** Participant statistics distinguish completion rate, completed obligations, unexcused misses, excused misses, participant self-revocations, current daily discipline streak, best streak, penalty count, total penalty amount, total paid, outstanding debt, normalized timing, and rank. Self-revocations are informational and do not themselves add positive or negative ranking score. Excused history supports breakdown by habit, reason, and timeline.
 - **BR-104:** Financial statistics are calculated per challenge. A cross-challenge aggregate, if later shown, is a derived display and never an accounting boundary.
 - **BR-105:** Conceptual filters include today, 7 days, 30 days, challenge lifetime, custom range, habit, and participant, subject to permissions.
 - **BR-106:** Admin monitoring includes today's completion state, pending/missed habits, upcoming deadlines, participant attention indicators, debts, and payment requests.
@@ -227,6 +227,37 @@ Example: a task deadline was 23:00 and no server completion exists. The next mor
 - **BR-158:** Every such review, waiver, adjustment, or correction remains auditable with actor, beneficiary/participant, challenge, target, old/new state where applicable, reason, and authoritative time.
 - **BR-159:** MVP adds no participant voting, moderator role, granular permission matrix, or special bypass for a sole admin. A future trusted-reviewer/delegated-review workflow remains V2 only.
 
-## 20. Open Questions
+## 20. Participant Completion Revocation
+
+- **BR-160:** An authenticated participant, including a participating admin acting normally as a participant, may revoke only their own currently effective completion when it is established by that participant's normal progress/completion event. For a weekly occurrence habit, the same operation may revoke the server-resolved latest unreversed counted occurrence even before the overall weekly target is complete. This less-favorable or neutral self-correction requires no admin approval.
+- **BR-161:** Participant revocation cannot target another participant, an already revoked event, or a task whose effective state was established or subsequently finalized by an admin correction or other privileged decision. It cannot improve historical accountability, fabricate evidence, or bypass privileged review.
+- **BR-162:** `revoke_own_completion(task_id, idempotency_key)` derives the caller from `auth.uid()` and uses one authoritative server timestamp. The client cannot supply the actor, revocation time, replacement completion time, or historical effective outcome.
+- **BR-163:** Revocation appends an immutable event referencing the specific server-resolved participant event: the event currently establishing effective completion, or the latest unreversed counted occurrence for a weekly occurrence habit. It never updates or deletes that original event, its authoritative acceptance time, or any earlier progress evidence.
+- **BR-164:** Effective progress and counted occurrences exclude contributions referenced by a valid revocation. The task projection is recomputed from unreversed events and applicable privileged decisions; an effective completion timestamp exists only when currently valid evidence reaches the target and never comes from a revoked event.
+- **BR-165:** If revocation is accepted at or before `deadline_at` and effective progress falls below the eligible target, the task returns to `PENDING`, creates no penalty, and may be completed again before the deadline. Any later valid completion is a new event with a new authoritative server timestamp.
+- **BR-166:** If revocation is accepted after `deadline_at` and leaves the target unmet, the same transaction sets the effective outcome to `EXCUSED` when approved coverage applies, otherwise to `MISSED`; it creates any configured penalty exactly once. Existing or later excuse relief remains append-only under BR-114–BR-122.
+- **BR-167:** For quantity or duration habits, revocation invalidates the participant event that currently caused the target to be reached. While the window remains active, the participant may append corrected lower progress and later progress; immutable earlier events are never overwritten.
+- **BR-168:** For the task-only MVP RPC, a weekly occurrence revocation uses last-in-first-out semantics and reverses the latest unreversed normal participant occurrence; it does not accept an arbitrary client event ID. The event no longer contributes to the effective weekly achieved count. While the weekly period remains active, another valid occurrence may later count subject to the one-effective-occurrence-per-local-day rule; after close, the server recomputes missing units and applies any required penalty idempotently.
+- **BR-169:** If the original completion produced team activity, its feed event remains and the transaction appends a linked revocation/correction activity event. Current UI must show effective state. Routine revocations need no aggressive team-wide push, while post-deadline revocations that create accountability or financial effects are visible to appropriate admins and in-app history.
+- **BR-170:** Statistics may report participant self-revocations separately. The act of revocation has no positive or negative ranking score; only the recomputed effective obligation outcome, eligibility, and any later valid completion affect ranking and streaks.
+- **BR-171:** The revoke function locks the task, verifies ownership, resolves the permitted current participant completion source or latest weekly occurrence, rejects privileged-finalized state, appends the revocation, recomputes progress/outcome, and commits applicable ledger, activity, audit, notification, and outbox effects atomically.
+- **BR-172:** The revocation request key is unique. Repeating the same key returns the established result; another request against the same already-revoked completion cannot create a second revocation or duplicate penalty/activity/audit effects.
+- **BR-173:** Revocation and deadline closure use the same task lock and recheck one server instant after locking. Whether revocation is accepted before or after the inclusive deadline determines `PENDING` versus closed `MISSED`/`EXCUSED` behavior, and every ordering converges to one effective state and one penalty source.
+- **BR-174:** Revocation and later re-completion also serialize on the task lock. A re-completion accepted only after revocation and by the deadline may establish a new effective completion event/time; stale or out-of-order requests return the current state or a typed conflict rather than reviving revoked timing.
+- **BR-175:** A revoked completion contributes nothing to completion counts, normalized timing tie-breakers, or streak success. If a later valid completion exists, only its current unreversed evidence and authoritative timestamp may contribute.
+
+## 21. Premium Completion and Revocation Feedback
+
+- **BR-176:** Flutter must not celebrate an optimistic tap. Completion feedback begins only after the server accepts a valid completion or the client reconciles an equivalent authoritative update, and rapid state changes must cancel stale celebration safely.
+- **BR-177:** Partial progress below target uses subtle feedback only: an updated progress state, small confirmation, restrained progress animation, and optional light haptic. It uses no large confetti.
+- **BR-178:** A single habit completion uses a medium, short celebration: completed button/card transition, check animation, tasteful brief confetti, concise success message, and optional light haptic. A suitable example is “Kitob o‘qish muvaffaqiyatli bajarildi! Barakalloh!”; exact localized wording remains refinable UI copy, not a hard-coded business invariant.
+- **BR-179:** Completing all eligible daily habits uses a stronger but still brief day-complete state with clear streak/status reinforcement. It must remain dismissible or non-blocking and must not repeatedly replay during reconciliation.
+- **BR-180:** Reaching a weekly target, such as Gym `3/3`, uses a distinct weekly-target completion state rather than reusing partial-progress feedback.
+- **BR-181:** Celebration remains premium, calm, disciplined, motivating, interruptible, and trustworthy. Avoid excessive confetti, childish visuals, random gradients, excessive emojis, repeated disruptive full-screen effects, visual treatment that trivializes accountability, and any completion celebration inside serious finance or administrative flows.
+- **BR-182:** System or user reduced-motion preference reduces or disables non-essential animation and confetti. Static completed state, accessible icon/text, and clear success copy must preserve the same meaning without relying on motion, haptics, or color alone. Haptics remain optional and respect available system/app preferences where practical.
+- **BR-183:** Revocation requires explicit confirmation with accessible consequence text based on authoritative state: before deadline, explain the return to pending; after deadline, explain the likely missed outcome unless excused and the configured penalty risk. The server still revalidates current time/state after confirmation.
+- **BR-184:** Successful revocation uses neutral feedback such as “Belgilash bekor qilindi,” never celebration. Loading, network failure, rejection, stale-state conflict, and permission-denied behavior remain explicit and recoverable; implementation routes interaction/accessibility through `ui-ux-pro-max`, visual polish through `ui-craft`, intentional micro-interactions through `animate`/`delight`, and failure states through `unhappy`.
+
+## 22. Open Questions
 
 None currently.

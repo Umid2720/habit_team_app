@@ -51,8 +51,8 @@ Legend: **Own** is a row belonging to `auth.uid()`; **Shared** is intentionally 
 | `challenge_pauses` | Shared | Admin challenge | Admin pause RPC | Admin resume RPC | Forbidden |
 | `habits` | Shared | Admin challenge | Admin RPC | Admin RPC for safe current metadata | Forbidden after use |
 | `habit_rule_versions` | Shared applicable/history | Admin challenge | Admin versioning RPC | RPC only to close an eligible range | Forbidden |
-| `task_instances` | Own; team statistics only through safe views | Admin challenge | Worker/catch-up only | Completion/correction/closure RPC only | Forbidden |
-| `task_progress_events` | Own | Admin challenge | Participant progress RPC | Forbidden | Forbidden |
+| `task_instances` | Own; team statistics only through safe views | Admin challenge | Worker/catch-up only | Completion/revocation/correction/closure RPC only | Forbidden |
+| `task_progress_events` | Own | Admin challenge | Participant progress/completion/revocation RPC only | Forbidden | Forbidden |
 | `task_corrections` | Own task corrections | Admin challenge | Admin correction/review RPC | Forbidden | Forbidden |
 | `excuse_requests` | Own | Admin challenge review queue | Participant submit RPC | Independent-review RPC | Forbidden |
 | `excuse_request_habits` | Own parent request | Admin challenge | Submit RPC | Review RPC sets decision fields once | Forbidden |
@@ -76,6 +76,7 @@ Every public function derives the actor from `auth.uid()`, resolves challenge an
 |---|---|---|
 | `complete_task` | Authenticated active participant; task belongs to caller and challenge membership | Capture server time; task open/eligible and `<= deadline_at`; lock task; idempotent completion/activity |
 | `record_task_progress` | Authenticated active participant; own task; amount/type valid | Server-derived acceptance/local date; active window; lock and append event; request-key and occurrence uniqueness |
+| `revoke_own_completion` | Authenticated owning participant; current effective source must be that participant's normal unreversed completion event, or the server-resolved latest unreversed occurrence for a weekly occurrence task | Lock task; reject another user, client-selected event, arbitrary progress, or privileged-finalized state; capture server time; append one linked revocation; recompute effective progress/outcome; atomically apply deadline/excuse/penalty/activity/audit/notice effects; unique request and reversal target |
 | `submit_excuse_request` | Authenticated active participant; own challenge membership and nonempty challenge habit set | Server `submitted_at`; atomic parent/children/notice; idempotent request |
 | `review_excuse_request` | Active admin in request challenge; actor must differ from participant | Lock pending request; server review time; approved subset only; atomic effects/corrections/waivers/audit; one terminal decision |
 | `submit_payment_request` | Authenticated active participant; own challenge debt; amount/currency valid | Recalculate debt; one pending per member/challenge; server time; atomic request/notice; idempotent |
@@ -92,7 +93,7 @@ Every public function derives the actor from `auth.uid()`, resolves challenge an
 | `close_due_tasks` | Trusted scheduled worker only | Server time; locked batches; atomic outcome/penalty/events/outbox; unique sources and retry-safe claims |
 | `dispatch_notification_outbox` | Trusted dispatcher only | Claim locked due jobs; no domain decisions; per-device uniqueness, bounded retries, safe terminal error state |
 
-No sole-admin bypass exists. Their own excuse/payment remains pending, and their self-benefiting waiver or correction is rejected until a different active admin acts.
+No sole-admin bypass exists. Their own excuse/payment remains pending, and their self-benefiting waiver or correction is rejected until a different active admin acts. A participating admin may use `revoke_own_completion` under exactly the normal owner-bound participant rules because it cannot improve their state or invoke privileged authority.
 
 ## 6. `SECURITY DEFINER` Functions
 
@@ -104,7 +105,7 @@ The function must validate `auth.uid()`, reject a missing identity, derive the a
 
 ## 7. Client-Supplied Identifiers
 
-Client identifiers select a candidate record; they never prove ownership or authority. Participant RPCs accept `task_id`, request content, and an idempotency key, then bind the actor through `auth.uid()`. An interface such as `complete_task(task_id, arbitrary_user_id)` is prohibited.
+Client identifiers select a candidate record; they never prove ownership or authority. Participant RPCs accept `task_id`, request content, and an idempotency key, then bind the actor through `auth.uid()`. `revoke_own_completion` accepts no actor, revocation time, target progress event, replacement timestamp, outcome, or penalty input; the server resolves all of them from the locked task and current effective source. An interface such as `complete_task(task_id, arbitrary_user_id)` is prohibited.
 
 Admin commands may name a target member, request, habit, or ledger row, but the server resolves its challenge and verifies the caller's active grant in that same challenge. Ignore or reject client `is_admin`, `role`, debt, status, currency, completion time, beneficiary, and challenge fields that can be derived from the target. Opaque UUIDs reduce accidental disclosure but are not authorization.
 
@@ -114,11 +115,15 @@ Capture one database-generated authoritative instant at the start of each decisi
 
 Participants cannot backdate. Completion accepted at exactly `deadline_at` is on time; later receipt is rejected even if a queued client action claims an earlier time. Historical corrections never manufacture an authoritative timestamp. `COMPLETED_ON_TIME` requires a pre-existing trusted server record proving the target was reached by the deadline; otherwise acknowledgment is `COMPLETED_LATE` with no artificial ranking timestamp.
 
+Revocation time is likewise generated by the database after the task is locked. A client confirmation shown before the deadline grants no pre-deadline treatment if the server accepts the revoke later. The function recomputes `PENDING`, `MISSED`, or `EXCUSED` from that authoritative instant and excludes every reversed event timestamp from current ranking/streak evidence.
+
 ## 9. Financial Security
 
 `ledger_entries` is the immutable, challenge-scoped source of truth and debt is derived from signed entries. Participants cannot directly insert, update, or delete ledger rows. A payment submission creates only a pending request and does not reduce debt.
 
 Independent approval locks the payment and finance scope, confirms the reviewer is a different active admin, recalculates current debt and currency, and atomically appends exactly one `PAYMENT_CONFIRMED` entry. The database enforces at most one pending request per participant/challenge and unique financial source/request identifiers. Rejection has no ledger effect.
+
+A post-deadline self-revocation that exposes an uncovered miss appends the configured task-sourced penalty in the same transaction. Task/source uniqueness prevents duplicate penalties under retries or races; later excuse relief uses a linked compensating entry and never deletes the penalty or revocation.
 
 Waivers and negative adjustments require a different active admin from the beneficiary, cannot over-credit the source/debt, and append a linked compensating entry. No correction deletes or rewrites a financial fact. Challenge currency must match throughout and becomes immutable after the first ledger entry.
 
@@ -132,6 +137,8 @@ Review records the actor, authoritative time, requested and approved scope, reas
 
 Only an active challenge admin may correct history. The server resolves the task participant, computes whether the transition benefits completion, accountability, or ranking, and prohibits a participating admin from beneficially correcting their own task. A different active admin is required.
 
+Participant completion revocation is a separate narrow non-beneficial operation, not general historical correction permission. It may invalidate only the caller's current normal participant completion event, or the server-resolved latest unreversed occurrence for a weekly occurrence task. If an admin correction or other privileged decision establishes or finalizes effective state, the participant completion pointer/history check rejects normal revoke rather than bypassing review.
+
 Every correction has a mandatory reason, actor, server `recorded_at`, immutable old/new state, and audit linkage. On-time classification requires a referenced, pre-existing trusted server event whose authoritative timestamp proves completion by the deadline. User testimony, a manual time, editable metadata, device clock, or screenshot is insufficient. A separate penalty waiver changes finance only and never changes completion timing or ranking evidence.
 
 ## 12. Notification Security
@@ -142,7 +149,7 @@ The outbox is server/dispatcher-only. Users read only their own private notifica
 
 ## 13. Realtime Security
 
-Realtime publication must preserve the same RLS and column exposure as normal reads. Suitable streams are safe `activity_events`, a user's own task/status changes, own notification rows, and own payment/excuse status—or admin review queues within the authorized challenge. Publish only required columns or security-safe views.
+Realtime publication must preserve the same RLS and column exposure as normal reads. Suitable streams are safe completion/revocation `activity_events`, a user's own task/status changes, own notification rows, and own payment/excuse status—or admin review queues within the authorized challenge. Publish only required columns or security-safe views.
 
 Do not broadly publish ledger details, free-form excuse reasons, audit snapshots, device tokens, outbox rows, or internal idempotency data. A subscription to another challenge ID must return no rows. The team feed contains only deliberately shared event metadata; Realtime is neither push delivery nor an authority for state transitions.
 
@@ -154,7 +161,7 @@ Admin status does not justify unrestricted table access. Admins do not receive p
 
 ## 15. Audit Security
 
-`audit_log` is append-only and writable only as a side effect of trusted functions/workers. Each entry identifies challenge, actor (or named system operation), action, target, authoritative time, request/correlation ID, reason when required, and minimized old/new state. It never replaces the domain event itself.
+`audit_log` is append-only and writable only as a side effect of trusted functions/workers. Each entry identifies challenge, actor (or named system operation), action, target, authoritative time, request/correlation ID, reason when required, and minimized old/new state. Participant completion revocation records the actor and projection transition while the linked progress event remains primary evidence. Audit never replaces the domain event itself.
 
 Active challenge admins may read redacted audit rows for their challenge. Participants do not query the base log; narrow views may expose correction/decision history affecting their own records. Audit JSON must exclude passwords, reset material, tokens, service secrets, unnecessary excuse text, and oversized payloads. Updates/deletes are denied to clients and ordinary admins; retention, export, and operator access require a separate controlled policy.
 
@@ -184,6 +191,13 @@ Workers derive challenge/user targets from database queries, use server time, cl
 | User edits request `user_id` | Derive actor from `auth.uid()` and ownership from locked rows |
 | User calls RPC for another person's task | Task-owner and active-membership check inside RPC |
 | Participant directly updates task status/time | RLS/column grants deny; authoritative writes only through RPC |
+| Participant revokes another user's completion | Resolve `auth.uid()` to locked task owner; reject mismatch before any event/effect |
+| Participant chooses an arbitrary event to reverse | RPC accepts only task/key; server resolves the current effective participant completion event |
+| Participant tries to revoke admin-corrected/finalized state | Require current normal participant completion pointer and no superseding privileged decision |
+| Forged or delayed revoke timestamp | Generate time after lock; ignore device time and displayed pre-deadline confirmation |
+| Replayed/concurrent revoke | Unique request and reversal target plus task lock; return prior result/conflict without duplicate effects |
+| Revoke races deadline or re-completion | Shared task lock and post-lock state/time validation; unique penalty/activity/audit sources; new completion gets new evidence/time |
+| Weekly close races occurrence revocation | Shared weekly task lock; recompute unreversed occurrences and missing units after locking; unique reversal and task-penalty sources |
 | Participant manually calls admin RPC | Function checks active admin grant in target challenge |
 | Admin approves/rejects own excuse | Resolve participant and reject actor equality server-side |
 | Admin approves/rejects own payment | Resolve requester and reject actor equality server-side |
@@ -243,6 +257,15 @@ Future automated tests must call both the intended RPCs and direct Data API path
 22. Realtime subscriptions expose only the same rows/columns permitted by RLS.
 23. Missing/invalid identity, challenge scope, role, or worker secret fails closed.
 24. Definer functions cannot resolve attacker-controlled objects through `search_path` and are not executable by unintended roles.
+25. A participant can revoke their own current normal participant completion—or the server-resolved latest weekly occurrence—but cannot revoke another participant's event or select an arbitrary historical event.
+26. A participant cannot revoke a completion or task state established/superseded by an admin correction or privileged finalization.
+27. Revocation preserves the original progress/completion row and appends exactly one linked server-timestamped revocation; direct update/delete remains denied.
+28. A pre-deadline revocation below target returns the task to `PENDING`, creates no penalty, and a later legitimate completion receives a new authoritative timestamp.
+29. A post-deadline revocation deterministically becomes `MISSED` or `EXCUSED` and creates at most one applicable penalty, including under retry and concurrent deadline processing.
+30. Quantity/duration and weekly-occurrence revocations remove only the targeted event from effective aggregates, allow valid in-window correction/re-completion, and preserve one effective weekly occurrence per local day.
+31. Revoked completion timestamps never contribute to completion statistics, normalized ranking timing, or streaks; self-revocation count is separately reportable and score-neutral.
+32. Revoke, deadline, and re-completion race tests cover both lock orderings and converge to one projection, one reversal, one activity/audit trail, and one task-sourced penalty at most.
+33. Weekly close and occurrence revocation race tests cover both lock orderings, recompute from unreversed events, preserve one effective occurrence per local day, and create at most one missing-unit penalty effect per task/source.
 
 ## 22. Decisions and Risks
 
@@ -251,12 +274,12 @@ Future automated tests must call both the intended RPCs and direct Data API path
 - PostgreSQL is the authoritative security and transaction boundary; RLS controls visibility and narrow RPCs control sensitive writes.
 - Identity, participation, and the full MVP admin grant are separate.
 - Privileged self-review/self-benefit has no sole-admin bypass and requires a different active challenge admin.
-- Time, finance, corrections, audit, and notification delivery use server-generated, append-oriented evidence.
+- Time, finance, participant revocations, corrections, audit, and notification delivery use server-generated, append-oriented evidence.
 - Edge Functions handle secret-bearing external work, not core transactional decisions.
 
 ### Residual risks
 
-The highest risks are a missing predicate in a definer function, overly broad RLS/Realtime publication, timezone/deadline race defects, incorrect beneficial-correction classification, compromised privileged credentials, and sensitive data in logs/push/audit. A sole participating admin can intentionally leave their own requests unresolved; this is accepted product behavior, not an authorization exception.
+The highest risks are a missing predicate in a definer function, accepting the wrong revocation target, leaking revoked evidence into derived aggregates, overly broad RLS/Realtime publication, timezone/deadline/revocation race defects, incorrect beneficial-correction classification, compromised privileged credentials, and sensitive data in logs/push/audit. A sole participating admin can intentionally leave their own requests unresolved; this is accepted product behavior, not an authorization exception.
 
 ### Future hardening
 
@@ -264,4 +287,4 @@ Add automated policy-diff tests, database role linting, secret scanning, rate li
 
 ### Migration assumptions
 
-Migrations must enforce RLS on all 22 tables; deny direct authoritative writes; create narrow grants/views; encode active challenge scope, reviewer/beneficiary independence, immutable history, evidence rules, uniqueness/idempotency, and challenge currency/time constraints; and protect every definer/worker entry point. No migration may weaken these invariants for convenience.
+Migrations must enforce RLS on all 22 tables; deny direct authoritative writes; create narrow grants/views; encode active challenge scope, reviewer/beneficiary independence, immutable completion/revocation history, valid effective/reversal sources, evidence rules, uniqueness/idempotency, and challenge currency/time constraints; and protect every definer/worker entry point. No migration may weaken these invariants for convenience.

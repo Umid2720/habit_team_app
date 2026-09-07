@@ -2,7 +2,7 @@
 
 ## 1. Scope and Authority
 
-This document translates [PRODUCT_SPEC.md](PRODUCT_SPEC.md) and BR-001–BR-159 in [BUSINESS_RULES.md](BUSINESS_RULES.md) into a production-safe technical design. It does not define SQL, RLS policies, or deployment configuration. PostgreSQL is the authoritative domain boundary; Flutter is an untrusted presentation client.
+This document translates [PRODUCT_SPEC.md](PRODUCT_SPEC.md) and BR-001–BR-184 in [BUSINESS_RULES.md](BUSINESS_RULES.md) into a production-safe technical design. It does not define SQL, RLS policies, or deployment configuration. PostgreSQL is the authoritative domain boundary; Flutter is an untrusted presentation client.
 
 ## 2. System Overview
 
@@ -42,7 +42,7 @@ The system is a modular monolith: one Flutter client, Supabase Auth/API/Realtime
 
 Flutter may render authorized state, collect input, call RPCs, show connectivity/conflict states, cache non-authoritative presentation data, and subscribe to permitted Realtime changes. Riverpod should expose explicit loading/data/error states; `go_router` may hide unavailable routes for UX but never serves as authorization.
 
-Flutter must not decide completion validity or `completed_at`, close periods, create penalties, calculate authoritative debt, approve payments/excuses, establish correction truth, or persist ranking facts. Client-generated timestamps and cached role/debt/status values are hints only. Every sensitive command is revalidated against current database state and `clock_timestamp()`/`now()` within the transaction.
+Flutter must not decide completion or revocation validity, write effective progress/outcome/completion fields directly, choose `completed_at`/`revoked_at`, close periods, create penalties, calculate authoritative debt, approve payments/excuses, establish correction truth, or persist ranking facts. Client-generated timestamps and cached role/debt/status values are hints only. Every sensitive command is revalidated against current database state and `clock_timestamp()`/`now()` within the transaction.
 
 ## 5. Authentication and Authorization
 
@@ -60,6 +60,7 @@ Each public RPC accepts a caller-generated UUID idempotency key where retry is p
 |---|---|---|---|
 | `complete_task(task_id, request_id)` | Owning participant | Lock task; verify membership, eligible `PENDING`, server time `<= deadline_at`, and boolean/occurrence semantics; write progress/completion fact, authoritative time, activity, notification | Unique progress/completion request; repeated call returns established result without duplicate activity |
 | `record_task_progress(task_id, amount, request_id)` | Owning participant | Lock task; verify window/type/positive amount; derive challenge-local occurrence date from server time; append event; update aggregate; complete when target reached | Unique request ID; weekly counted-occurrence uniqueness; event timestamp is evidence |
+| `revoke_own_completion(task_id, request_id)` | Owning participant, including an admin acting as participant | Lock task; derive actor; require the current effective completion source to be that participant's normal unreversed event, or resolve the latest unreversed counted event for a weekly occurrence task; reject privileged-finalized state; append a linked revocation; recompute effective aggregate and server-time outcome; atomically apply any post-deadline excuse/penalty, activity, audit, and notice effects | No client-selected event; unique request and unique reversal target; same task lock as completion/deadline worker; retry returns prior result without duplicate effects |
 | `submit_excuse_request(challenge_id, range, reason, habits, request_id)` | Participant | Verify active membership, valid range/reason, nonempty owned challenge habits; create request and requested-habit rows; enqueue admin notice | One request per idempotency key; request creation is auditable |
 | `review_excuse_request(request_id, decision, approved_scope, request_key)` | Different challenge admin | Lock request; verify `PENDING`, admin role, reviewer != participant, approved scope is a subset; create task excuse effects; apply pre-deadline coverage or late corrections and linked waivers | Terminal state compare-and-set; one effect per request/task; audit requested vs approved scope |
 | `submit_payment_request(challenge_id, amount, request_id)` | Participant | Verify membership, currency, positive amount, amount <= locked/derived challenge debt, and no pending request; create `PENDING` request and admin notification | Partial unique pending index plus idempotency key |
@@ -173,16 +174,51 @@ sequenceDiagram
     RPC->>DB: Lock task and verify owner/eligibility/server time
     DB->>DB: Append progress event and update aggregate
     alt Target reached by deadline
-        DB->>DB: Set completed fact/outcome and authoritative completed_at
+        DB->>DB: Set completed projection, authoritative completed_at, and effective participant completion event
         DB->>RT: Add activity + notification records
     end
     RPC-->>F: Authoritative task projection
     RT-->>F: Team/task update when subscribed
 ```
 
-Flutter celebrates only after the authoritative response (or reconciled Realtime event), never merely after a local tap.
+Flutter celebrates only after the authoritative response (or reconciled Realtime event), never merely after a local tap. Feedback scales from subtle partial progress through single-habit, all-daily, and weekly-target completion. Motion is short and non-blocking; reduced-motion mode preserves a static/text success state and suppresses non-essential animation/confetti, while optional haptics respect available system/app preferences. Completion celebration is not reused in finance or administrative flows.
 
-## 12. Ranking Architecture
+## 12. Participant Completion Revocation
+
+The existing `task_progress_events` stream carries both positive participant events and append-only `COMPLETION_REVOKED` events. Normally a revocation points to the currently effective participant event that caused the target to be reached. For weekly occurrence habits, the task-only RPC instead resolves the latest unreversed normal occurrence (last-in-first-out), including while the weekly task is still pending; it never accepts an arbitrary event from the client. That original row and its acceptance time never change. The task projection caches current effective progress plus an `effective_participant_completion_event_id`; only an unreversed normal participant event may populate that completion pointer. A privileged correction clears or supersedes it, so the participant RPC cannot undo an admin-finalized decision.
+
+```mermaid
+sequenceDiagram
+    actor U as Participant
+    participant F as Flutter
+    participant RPC as PostgreSQL RPC
+    participant DB as PostgreSQL
+    participant RT as Activity/notification
+
+    U->>F: Choose revoke completion
+    F->>F: Explain current deadline/penalty consequence
+    U->>F: Confirm
+    F->>RPC: revoke_own_completion(task, key)
+    RPC->>DB: Lock task; derive owner; recheck server time/source
+    DB->>DB: Append revocation linked to completion event
+    DB->>DB: Recompute effective progress and completion evidence
+    alt Still open and below target
+        DB->>DB: Set PENDING; no penalty
+    else Closed and covered
+        DB->>DB: Set EXCUSED; no penalty
+    else Closed and uncovered
+        DB->>DB: Set MISSED; append unique task penalty
+    end
+    DB->>RT: Append linked activity/audit and applicable in-app notice
+    RPC-->>F: Authoritative projection and consequence
+    F-->>U: Neutral confirmation; no celebration
+```
+
+All positive contributions referenced by revocation rows are excluded when reconciling `current_progress`, weekly counts, and completion time. Before the deadline, a later valid completion is a new event and becomes the only current participant completion source/time. After the deadline, normal re-completion remains prohibited. The deadline worker, weekly close, revoke RPC, and re-completion RPC use the same task lock; unique request IDs, one-revocation-per-target-event, and the task-sourced ledger uniqueness make every ordering converge without duplicate penalties or feed/audit effects. In a weekly-close/occurrence-revocation race, the transaction acquiring the task lock second recomputes the unreversed occurrence count and missing units from committed events before deciding the final outcome and penalty.
+
+If the original completion was already published, the feed keeps it and appends a linked revocation/correction event. Routine revocations do not require broad push. A post-deadline revocation that produces a miss or penalty creates appropriate admin-visible in-app history. Flutter obtains consequence copy from current authoritative state, confirms explicitly, then displays neutral success or a recoverable conflict/error state; it never celebrates revocation.
+
+## 13. Ranking Architecture
 
 Ranking is a query over closed `task_instances` and immutable evidence:
 
@@ -192,40 +228,42 @@ Ranking is a query over closed `task_instances` and immutable evidence:
 - tie-breaker: mean normalized authoritative completion time ascending;
 - exact ties share rank.
 
-Late acknowledgement without authoritative pre-deadline evidence has no `completed_at` eligible for timing (BR-143–BR-149). Weekly tasks use the authoritative timestamp when the eligible target was reached. Queries expose completed, unexcused, and excused counts separately. Start with database views/functions; introduce a refreshable materialized view only after measured query cost warrants it. Any cache must be derivable and invalidated/refreshed after relevant corrections.
+Late acknowledgement without authoritative pre-deadline evidence has no `completed_at` eligible for timing (BR-143–BR-149). Revoked contributions and their original timestamps are excluded; a later legitimate completion uses only its new authoritative timestamp (BR-160–BR-175). Weekly tasks use the authoritative timestamp when the current unreversed eligible target was reached. Queries expose completed, unexcused, excused, and self-revocation counts separately, while revocation count itself is score-neutral. Start with database views/functions; introduce a refreshable materialized view only after measured query cost warrants it. Any cache must be derivable and invalidated/refreshed after relevant corrections or revocations.
 
-## 13. Notifications and Realtime
+## 14. Notifications and Realtime
 
 Domain transactions write an authoritative in-app `notifications` row and, when push is applicable, one `notification_outbox` row per active device token. A scheduled Edge Function claims pending outbox rows, rechecks token/preference validity, calls FCM, and records success or retry state. Exponential backoff and a maximum-attempt dead state prevent hot loops; operators can inspect/replay dead entries. Unique event/recipient/device/channel keys prevent duplicate logical notices and isolate partial multi-device failures.
 
-Supabase Realtime may update authorized app-open views for task state, team activity, payment status, excuse status, and in-app notifications. Realtime publication should expose narrow tables/views and RLS-filtered rows. It is not background push and is not the authoritative record.
+Supabase Realtime may update authorized app-open views for task state, completion/revocation activity, payment status, excuse status, and in-app notifications. Realtime publication should expose narrow tables/views and RLS-filtered rows. It is not background push and is not the authoritative record.
 
 Notification failure never rolls back a committed completion, penalty, payment, excuse, or correction. Important in-app history already exists; push safely retries.
 
-## 14. Offline Behavior
+## 15. Offline Behavior
 
-Flutter may retain non-authoritative form input and display offline/unsynced states. A completion or progress action is accepted only when the server commits it by `deadline_at`. A later retry cannot carry a device timestamp to backdate acceptance. Conflict responses must replace optimistic UI with the authoritative task state and offer an appropriate next step; only audited admin correction can recognize historical completion.
+Flutter may retain non-authoritative form input and display offline/unsynced states. A completion or progress action is accepted only when the server commits it by `deadline_at`. Completion revocation also requires server commitment; an offline confirmation cannot establish `revoked_at` or pre-deadline treatment. A later retry cannot carry a device timestamp to backdate acceptance. Conflict responses replace optimistic UI with authoritative task state and an appropriate next step; only audited admin correction can recognize historical completion.
 
-## 15. Error, Conflict, and Retry Model
+## 16. Error, Conflict, and Retry Model
 
 - Duplicate tap/network retry with the same idempotency key returns the prior outcome.
 - A retry with a new key still meets domain unique constraints and cannot repeat terminal effects.
 - Serialization/state conflicts return a typed conflict with current authoritative state; Flutter refreshes instead of silently overwriting.
+- A stale revoke confirmation cannot force its previously displayed consequence; the server returns the current state and committed consequence, and Flutter updates its message/result accordingly.
 - Validation and permission failures are explicit and non-retryable without changed input/authority.
 - Transient database/network failures are retryable with bounded backoff.
 - Transactions are all-or-nothing across state, ledger, audit, activity, and outbox effects.
 - Push failures remain isolated in the outbox and never alter domain truth.
 
-## 16. Observability and Audit
+## 17. Observability and Audit
 
 Use structured server logs with correlation/request ID, operation name, authenticated actor ID, challenge ID, result class, duration, and safe error code. Never log passwords, tokens, free-form sensitive reason text, or service credentials. Monitor failed scheduled batches, outbox backlog/dead deliveries, RPC error rates, and unusual authorization failures.
 
-`audit_log` is append-only evidence for administrative and sensitive actions, storing actor, action, target, reason where required, and structured old/new snapshots. It supplements—not replaces—business event tables. Retain enough linkage to trace task → penalty → waiver, payment request → confirmed payment, and excuse request → task effects/corrections.
+`audit_log` is append-only evidence for administrative and sensitive actions, storing actor, action, target, reason where required, and structured old/new snapshots. It supplements—not replaces—business event tables. Retain enough linkage to trace completion event → participant revocation → effective task/penalty, task → penalty → waiver, payment request → confirmed payment, and excuse request → task effects/corrections.
 
-## 17. Known Technical Risks
+## 18. Known Technical Risks
 
 - Timezone/DST conversion at materialization boundaries can create duplicate or missing periods; frozen UTC windows and period uniqueness need boundary tests.
 - Deadline/completion races require row locks and inclusive deadline semantics.
+- Revocation/deadline/re-completion races and effective-event reconciliation require the same task lock, unique reversal targets, and tests proving revoked timestamps never leak into ranking or streaks.
 - Broad Realtime publication or incorrect RLS could leak private challenge data.
 - Outbox growth and poison FCM tokens need retention and deactivation policies.
 - Large ranking/history queries may later need derived materialization, but premature caches risk drift.
